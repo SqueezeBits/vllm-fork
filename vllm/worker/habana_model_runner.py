@@ -34,6 +34,9 @@ from vllm.utils import (HabanaMemoryProfiler, is_pin_memory_available,
 
 from .profiler import Profiler
 
+from habana_frameworks.torch.hpu.metrics import metric_global
+from habana_frameworks.torch.hpu.metrics import metric_localcontext
+
 logger = init_logger(__name__)
 
 _PAD_SLOT_ID = 0
@@ -266,6 +269,17 @@ class HabanaModelRunner:
         # Lazy initialization
         self.lora_manager: LRUCacheWorkerLoRAManager = None
         self.model: torch.nn.Module = None
+
+        self.warmup_gc_count = 0
+        self.warmup_gc_time = 0
+        self.prefill_forward_gc_count = 0
+        self.prefill_forward_gc_time = 0
+        self.decode_forward_gc_count = 0
+        self.decode_forward_gc_time = 0
+        self.prefill_sample_gc_count = 0
+        self.prefill_sample_gc_time = 0
+        self.decode_sample_gc_count = 0
+        self.decode_sample_gc_time = 0
 
         self._setup_buckets()
 
@@ -815,6 +829,7 @@ class HabanaModelRunner:
         self,
         seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
         kv_caches: List[torch.Tensor],
+        is_warmup: bool = False,
     ) -> Optional[SamplerOutput]:
         if self.is_driver_worker:
             event_start = self.profiler.get_timestamp_us()
@@ -849,32 +864,52 @@ class HabanaModelRunner:
         if self.vision_language_config:
             execute_model_kwargs.update({"image_input": multi_modal_input})
 
-        htorch.core.mark_step()
-        if self.is_driver_worker:
-            model_event_name = f"model_{'prompt' if is_prompt else 'decode'}_bs{batch_size}_seq{seq_len}_graphs{'T' if use_graphs else 'F'}"
-        else:
-            model_event_name = 'model_executable'
-        with self.profiler.record_event('internal', model_event_name):
-            hidden_states = self.model.forward(**execute_model_kwargs, selected_token_indices=sampling_metadata.selected_token_indices, bypass_hpu_graphs=not use_graphs)
+        with metric_localcontext("graph_compilation") as forward_metric:
+            htorch.core.mark_step()
+            if self.is_driver_worker:
+                model_event_name = f"model_{'prompt' if is_prompt else 'decode'}_bs{batch_size}_seq{seq_len}_graphs{'T' if use_graphs else 'F'}"
+            else:
+                model_event_name = 'model_executable'
+            with self.profiler.record_event('internal', model_event_name):
+                hidden_states = self.model.forward(**execute_model_kwargs, selected_token_indices=sampling_metadata.selected_token_indices, bypass_hpu_graphs=not use_graphs)
 
-        # Compute the logits.
-        with self.profiler.record_event('internal', f'compute_logits_{"prompt" if is_prompt else "decode"}_bs{batch_size}_seq{seq_len}'):
-            sampling_metadata.selected_token_indices = None
-            logits = self.model.compute_logits(hidden_states, sampling_metadata)
-        htorch.core.mark_step()
+            # Compute the logits.
+            with self.profiler.record_event('internal', f'compute_logits_{"prompt" if is_prompt else "decode"}_bs{batch_size}_seq{seq_len}'):
+                sampling_metadata.selected_token_indices = None
+                logits = self.model.compute_logits(hidden_states, sampling_metadata)
+            htorch.core.mark_step()
+
+            stats = forward_metric.stats()
+            if not is_warmup and stats[0][1]:
+                if is_prompt: # prefill
+                    self.prefill_forward_gc_count += stats[0][1]
+                    self.prefill_forward_gc_time += stats[1][1]
+                else: # decode
+                    self.decode_forward_gc_count += stats[0][1]
+                    self.decode_forward_gc_time += stats[1][1]
 
         # Only perform sampling in the driver worker.
         if not self.is_driver_worker:
             return None
 
-        # Sample the next token.
-        with self.profiler.record_event('internal', f'sample_{"prompt" if is_prompt else "decode"}_bs{batch_size}_seq{seq_len}'):
-            output = self.model.sample(
-                logits=logits,
-                sampling_metadata=sampling_metadata,
-            )
-        output.outputs = output.outputs[:real_batch_size]
-        htorch.core.mark_step()
+        with metric_localcontext("graph_compilation") as sample_metric:
+            # Sample the next token.
+            with self.profiler.record_event('internal', f'sample_{"prompt" if is_prompt else "decode"}_bs{batch_size}_seq{seq_len}'):
+                output = self.model.sample(
+                    logits=logits,
+                    sampling_metadata=sampling_metadata,
+                )
+            output.outputs = output.outputs[:real_batch_size]
+            htorch.core.mark_step()
+
+            stats = sample_metric.stats()
+            if not is_warmup and stats[0][1]:
+                if is_prompt:
+                    self.prefill_sample_gc_count += stats[0][1]
+                    self.prefill_sample_gc_time += stats[1][1]
+                else:
+                    self.decode_sample_gc_count += stats[0][1]
+                    self.decode_sample_gc_time += stats[1][1]
 
         if self.is_driver_worker:
             # Stop recording 'execute_model' event
@@ -932,7 +967,7 @@ class HabanaModelRunner:
         seqs = [self.create_dummy_seq_group_metadata(i, seq_len, is_prompt) for i in range(batch_size)]
         torch.hpu.synchronize()
         for _ in range(times):
-            self.execute_model(seqs, kv_caches)
+            self.execute_model(seqs, kv_caches, True)
             torch.hpu.synchronize()
         self.profiler.end()
         gc.collect()
@@ -984,29 +1019,37 @@ class HabanaModelRunner:
         if os.environ.get('VLLM_SKIP_WARMUP', 'false').lower() == 'true':
             logger.info("Skipping warmup...")
             return
-        self.profiler.start('internal', 'warmup')
-        start_mem = HabanaMemoryProfiler.current_device_memory_usage()
-        start_time = time.perf_counter()
-        self.warmup_all_buckets(self.prompt_buckets, True, kv_caches)
-        self.warmup_all_buckets(self.decode_buckets, False, kv_caches)
 
-        if not self.enforce_eager:
-            mem_margin = 1.0 - float(os.environ.get('VLLM_GRAPH_MEM_MARGIN', '0.02'))
-            free_mem = mem_margin * HabanaMemoryProfiler.current_free_device_memory()
-            free_mem = align_workers(free_mem, torch.distributed.ReduceOp.MIN)
-            prompt_graph_mem_ratio = float(os.environ.get('VLLM_GRAPH_PROMPT_RATIO', '0.5'))
-            prompt_available_memory = prompt_graph_mem_ratio * free_mem
-            decode_available_memory = free_mem - prompt_available_memory
-            prompt_strategy = 'min_tokens'
-            decode_strategy = os.environ.get('VLLM_GRAPH_DECODE_STRATEGY', 'max_bs')
-            self.warmup_graphs(prompt_strategy, self.prompt_buckets, True, kv_caches, prompt_available_memory)
-            self.warmup_graphs(decode_strategy, self.decode_buckets, False, kv_caches, decode_available_memory)
+        with metric_localcontext("graph_compilation") as warmup_metric:        
+            self.profiler.start('internal', 'warmup')
+            start_mem = HabanaMemoryProfiler.current_device_memory_usage()
+            start_time = time.perf_counter()
+            self.warmup_all_buckets(self.prompt_buckets, True, kv_caches)
+            self.warmup_all_buckets(self.decode_buckets, False, kv_caches)
 
-        end_time = time.perf_counter()
-        end_mem = HabanaMemoryProfiler.current_device_memory_usage()
-        elapsed_time = end_time - start_time
-        logger.info(f"Warmup finished in {elapsed_time:.0f} secs, allocated {format_bytes(end_mem - start_mem)} of device memory")
-        self.profiler.end()
+            if not self.enforce_eager:
+                mem_margin = 1.0 - float(os.environ.get('VLLM_GRAPH_MEM_MARGIN', '0.02'))
+                free_mem = mem_margin * HabanaMemoryProfiler.current_free_device_memory()
+                free_mem = align_workers(free_mem, torch.distributed.ReduceOp.MIN)
+                prompt_graph_mem_ratio = float(os.environ.get('VLLM_GRAPH_PROMPT_RATIO', '0.5'))
+                prompt_available_memory = prompt_graph_mem_ratio * free_mem
+                decode_available_memory = free_mem - prompt_available_memory
+                prompt_strategy = 'min_tokens'
+                decode_strategy = os.environ.get('VLLM_GRAPH_DECODE_STRATEGY', 'max_bs')
+                self.warmup_graphs(prompt_strategy, self.prompt_buckets, True, kv_caches, prompt_available_memory)
+                self.warmup_graphs(decode_strategy, self.decode_buckets, False, kv_caches, decode_available_memory)
+
+            end_time = time.perf_counter()
+            end_mem = HabanaMemoryProfiler.current_device_memory_usage()
+            elapsed_time = end_time - start_time
+            logger.info(f"Warmup finished in {elapsed_time:.0f} secs, allocated {format_bytes(end_mem - start_mem)} of device memory")
+            self.profiler.end()
+   
+            stats = warmup_metric.stats()
+            self.warmup_gc_count = stats[0][1]
+            self.warmup_gc_time = stats[1][1]
+            logger.info(f"Warmup GC count: {self.warmup_gc_count}")
+            logger.info(f"Warmup GC time: {self.warmup_gc_time}")
 
     @property
     def vocab_size(self) -> int:

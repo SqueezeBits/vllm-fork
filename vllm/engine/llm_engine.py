@@ -620,7 +620,7 @@ class LLMEngine:
         """Forced log when no requests active."""
         if self.log_stats:
             self.stat_logger.log(
-                self._get_stats(scheduler_outputs, model_output))
+                self._get_stats(scheduler_outputs, model_output), self.model_executor.driver_worker.model_runner)
 
     def _get_stats(
             self,

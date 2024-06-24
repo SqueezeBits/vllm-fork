@@ -306,7 +306,7 @@ class StatLogger:
         self.metrics.gauge_avg_generation_throughput.labels(
             **self.labels).set(generation_throughput)
 
-    def log(self, stats: Stats) -> None:
+    def log(self, stats: Stats, runner=None) -> None:
         """Called by LLMEngine.
            Logs to prometheus and tracked stats every iteration.
            Logs to Stdout every self.local_interval seconds."""
@@ -336,7 +336,15 @@ class StatLogger:
                 "Avg generation throughput: %.1f tokens/s, "
                 "Running: %d reqs, Swapped: %d reqs, "
                 "Pending: %d reqs, GPU KV cache usage: %.1f%%, "
-                "CPU KV cache usage: %.1f%%",
+                "CPU KV cache usage: %.1f%%, "
+                "Prefill forward GC count: %d, "
+                "Prefill forward GC time: %d, "
+                "Prefill sample GC count: %d, "
+                "Prefill sample GC time: %d, "
+                "Decode forward GC count: %d, "
+                "Decode forward GC time: %d, "
+                "Decode sample GC count: %d, "
+                "Decode sample GC count: %d ",
                 prompt_throughput,
                 generation_throughput,
                 stats.num_running_sys,
@@ -344,6 +352,14 @@ class StatLogger:
                 stats.num_waiting_sys,
                 stats.gpu_cache_usage_sys * 100,
                 stats.cpu_cache_usage_sys * 100,
+                runner.prefill_forward_gc_count if runner else -1,
+                runner.prefill_forward_gc_time if runner else -1,
+                runner.prefill_sample_gc_count if runner else -1,
+                runner.prefill_sample_gc_time if runner else -1,
+                runner.decode_forward_gc_count if runner else -1,
+                runner.decode_forward_gc_time if runner else -1,
+                runner.decode_sample_gc_count if runner else -1,
+                runner.decode_sample_gc_time if runner else -1,
             )
 
             # Reset tracked stats for next interval.
