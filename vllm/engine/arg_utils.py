@@ -37,7 +37,7 @@ class EngineArgs:
     pipeline_parallel_size: int = 1
     tensor_parallel_size: int = 1
     max_parallel_loading_workers: Optional[int] = None
-    block_size: int = 16
+    block_size: int = 128
     enable_prefix_caching: bool = False
     use_v2_block_manager: bool = False
     swap_space: int = 4  # GiB
@@ -69,6 +69,7 @@ class EngineArgs:
     num_gpu_blocks_override: Optional[int] = None
     num_lookahead_slots: int = 0
     model_loader_extra_config: Optional[dict] = None
+    enable_1d_query: bool = False
 
     # Related to Vision-language models such as llava
     image_input_type: Optional[str] = None
@@ -564,6 +565,7 @@ class EngineArgs:
                                  speculative_config.num_lookahead_slots),
             delay_factor=self.scheduler_delay_factor,
             enable_chunked_prefill=self.enable_chunked_prefill,
+            enable_1d_query=self.enable_1d_query,
         )
         lora_config = LoRAConfig(
             max_lora_rank=self.max_lora_rank,
