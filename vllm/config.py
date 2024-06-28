@@ -591,6 +591,7 @@ class SchedulerConfig:
             prompt latency) before scheduling next prompt.
         enable_chunked_prefill: If True, prefill requests can be chunked based
             on the remaining max_num_batched_tokens.
+        enable_1d_query: If True, use 1d query throughout the forward process
     """
 
     def __init__(
@@ -602,6 +603,7 @@ class SchedulerConfig:
         num_lookahead_slots: int = 0,
         delay_factor: float = 0.0,
         enable_chunked_prefill: bool = False,
+        enable_1d_query: bool = False,
     ) -> None:
         if max_num_batched_tokens is not None:
             self.max_num_batched_tokens = max_num_batched_tokens
@@ -623,6 +625,12 @@ class SchedulerConfig:
         self.num_lookahead_slots = num_lookahead_slots
         self.delay_factor = delay_factor
         self.chunked_prefill_enabled = enable_chunked_prefill
+        self.enable_1d_query = enable_1d_query
+        if self.chunked_prefill_enabled and not self.enable_1d_query:
+            raise NotImplementedError(
+                "chunked-prefill with 2d query is not implemented. "
+                "Enable enable_1d_query to use chunked-prefill."
+            )
 
         self._verify_args()
 
