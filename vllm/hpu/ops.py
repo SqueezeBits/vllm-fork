@@ -14,10 +14,6 @@ from typing import List, Optional, Tuple
 
 import vllm.hpu.utils as hpu_utils
 
-# FIXME: For some reason splitting value causes DFAs on G3. This needs to be debugged
-PA_SPLIT_VALUE_DEFAULT = '0' if (htexp._get_device_type() == htexp.synDeviceType.synDeviceGaudi3) else '1'
-PA_SPLIT_VALUE = (os.environ.get('PA_SPLIT_VALUE', PA_SPLIT_VALUE_DEFAULT) == '1')
-
 
 def silu_and_mul(output, input):
     d = input.shape[-1] // 2
