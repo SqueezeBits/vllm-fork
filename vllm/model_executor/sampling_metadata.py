@@ -456,107 +456,189 @@ class SamplingTensors:
             for tokens in output_tokens
         ]
 
-        temperatures_t = torch.tensor(
-            temperatures,
-            device="cpu",
-            dtype=dtype,
-            pin_memory=pin_memory,
-        )
-        top_ps_t = torch.tensor(
-            top_ps,
-            device="cpu",
-            dtype=dtype,
-            pin_memory=pin_memory,
-        )
-        min_ps_t = torch.tensor(
-            min_ps,
-            device="cpu",
-            dtype=dtype,
-            pin_memory=pin_memory,
-        )
-        presence_penalties_t = torch.tensor(
-            presence_penalties,
-            device="cpu",
-            dtype=dtype,
-            pin_memory=pin_memory,
-        )
-        frequency_penalties_t = torch.tensor(
-            frequency_penalties,
-            device="cpu",
-            dtype=dtype,
-            pin_memory=pin_memory,
-        )
-        repetition_penalties_t = torch.tensor(
-            repetition_penalties,
-            device="cpu",
-            dtype=dtype,
-            pin_memory=pin_memory,
-        )
-        top_ks_t = torch.tensor(
-            top_ks,
-            device="cpu",
-            dtype=torch.int,
-            pin_memory=pin_memory,
-        )
-        idx_dtype = torch.long if not is_hpu() else torch.int # Gaudi doesn't have full native int64 support 
-        sample_indices_t = torch.tensor(
-            sample_indices,
-            device="cpu",
-            dtype=idx_dtype,
-            pin_memory=pin_memory,
-        )
-        prompt_tensor = torch.tensor(
-            prompt_padded_tokens,
-            device="cpu",
-            dtype=idx_dtype,
-            pin_memory=pin_memory,
-        )
-        output_tensor = torch.tensor(
-            output_padded_tokens,
-            device="cpu",
-            dtype=idx_dtype,
-            pin_memory=pin_memory,
-        )
-        # need to transpose and make contiguous to
-        # copy the tensor correctly.
-        # [batch_size, n_seeds] -> [n_seeds, batch_size]
-        sampling_seeds_t = torch.tensor(
-            sampling_seeds,
-            device="cpu",
-            dtype=idx_dtype,
-            pin_memory=pin_memory,
-        ).T.contiguous()
+        if is_hpu():
+            temperatures_t = torch.tensor(
+                temperatures,
+                device="hpu",
+                dtype=dtype,
+            )
+            top_ps_t = torch.tensor(
+                top_ps,
+                device="hpu",
+                dtype=dtype,
+            )
+            min_ps_t = torch.tensor(
+                min_ps,
+                device="hpu",
+                dtype=dtype,
+            )
+            presence_penalties_t = torch.tensor(
+                presence_penalties,
+                device="hpu",
+                dtype=dtype,
+            )
+            frequency_penalties_t = torch.tensor(
+                frequency_penalties,
+                device="hpu",
+                dtype=dtype,
+            )
+            repetition_penalties_t = torch.tensor(
+                repetition_penalties,
+                device="hpu",
+                dtype=dtype,
+            )
+            top_ks_t = torch.tensor(
+                top_ks,
+                device="hpu",
+                dtype=torch.int,
+            )
+            sample_indices_t = torch.tensor(
+                sample_indices,
+                device="hpu",
+                dtype=torch.int,
+            )
+            prompt_tensor = torch.tensor(
+                prompt_padded_tokens,
+                device="hpu",
+                dtype=torch.int,
+            )
+            output_tensor = torch.tensor(
+                output_padded_tokens,
+                device="hpu",
+                dtype=torch.int,
+            )
+            # [batch_size, n_seeds] -> [n_seeds, batch_size]
+            sampling_seeds_ = [list(seed) for seed in zip(*sampling_seeds)]
+            sampling_seeds_t = torch.tensor(
+                sampling_seeds_,
+                device="hpu",
+                dtype=torch.int,
+            )
 
-        # Because the memory is pinned, we can do non-blocking
-        # transfer to device.
+            # How many seeds the sample operation itself will need.
+            num_base_seeds = sampling_seeds_t.shape[0] - extra_seeds_to_generate
+            sampling_seeds_gpu = sampling_seeds_t
+            extra_seeds_gpu = sampling_seeds_gpu[num_base_seeds:]
+            if not extra_seeds_gpu.numel():
+                extra_seeds_gpu = None
+            sampling_seeds_gpu = sampling_seeds_gpu[:num_base_seeds]
 
-        # How many seeds the sample operation itself will need.
-        num_base_seeds = sampling_seeds_t.shape[0] - extra_seeds_to_generate
-        sampling_seeds_gpu = sampling_seeds_t.to(device=device,
-                                                 non_blocking=True)
-        extra_seeds_gpu = sampling_seeds_gpu[num_base_seeds:]
-        if not extra_seeds_gpu.numel():
-            extra_seeds_gpu = None
-        sampling_seeds_gpu = sampling_seeds_gpu[:num_base_seeds]
+            return cls(
+                temperatures=temperatures_t,
+                top_ps=top_ps_t,
+                top_ks=top_ks_t,
+                min_ps=min_ps_t,
+                presence_penalties=presence_penalties_t,
+                frequency_penalties=frequency_penalties_t,
+                repetition_penalties=repetition_penalties_t,
+                prompt_tokens=prompt_tensor,
+                output_tokens=output_tensor,
+                sampling_seeds=sampling_seeds_gpu,
+                sample_indices=sample_indices_t,
+                extra_seeds=extra_seeds_gpu,
+            )
+        else:
+            temperatures_t = torch.tensor(
+                temperatures,
+                device="cpu",
+                dtype=dtype,
+                pin_memory=pin_memory,
+            )
+            top_ps_t = torch.tensor(
+                top_ps,
+                device="cpu",
+                dtype=dtype,
+                pin_memory=pin_memory,
+            )
+            min_ps_t = torch.tensor(
+                min_ps,
+                device="cpu",
+                dtype=dtype,
+                pin_memory=pin_memory,
+            )
+            presence_penalties_t = torch.tensor(
+                presence_penalties,
+                device="cpu",
+                dtype=dtype,
+                pin_memory=pin_memory,
+            )
+            frequency_penalties_t = torch.tensor(
+                frequency_penalties,
+                device="cpu",
+                dtype=dtype,
+                pin_memory=pin_memory,
+            )
+            repetition_penalties_t = torch.tensor(
+                repetition_penalties,
+                device="cpu",
+                dtype=dtype,
+                pin_memory=pin_memory,
+            )
+            top_ks_t = torch.tensor(
+                top_ks,
+                device="cpu",
+                dtype=torch.int,
+                pin_memory=pin_memory,
+            )
+            idx_dtype = torch.long if not is_hpu() else torch.int # Gaudi doesn't have full native int64 support 
+            sample_indices_t = torch.tensor(
+                sample_indices,
+                device="cpu",
+                dtype=idx_dtype,
+                pin_memory=pin_memory,
+            )
+            prompt_tensor = torch.tensor(
+                prompt_padded_tokens,
+                device="cpu",
+                dtype=idx_dtype,
+                pin_memory=pin_memory,
+            )
+            output_tensor = torch.tensor(
+                output_padded_tokens,
+                device="cpu",
+                dtype=idx_dtype,
+                pin_memory=pin_memory,
+            )
+            # need to transpose and make contiguous to
+            # copy the tensor correctly.
+            # [batch_size, n_seeds] -> [n_seeds, batch_size]
+            sampling_seeds_t = torch.tensor(
+                sampling_seeds,
+                device="cpu",
+                dtype=idx_dtype,
+                pin_memory=pin_memory,
+            ).T.contiguous()
 
-        return cls(
-            temperatures=temperatures_t.to(device=device, non_blocking=True),
-            top_ps=top_ps_t.to(device=device, non_blocking=True),
-            top_ks=top_ks_t.to(device=device, non_blocking=True),
-            min_ps=min_ps_t.to(device=device, non_blocking=True),
-            presence_penalties=presence_penalties_t.to(device=device,
-                                                       non_blocking=True),
-            frequency_penalties=frequency_penalties_t.to(device=device,
-                                                         non_blocking=True),
-            repetition_penalties=repetition_penalties_t.to(device=device,
-                                                           non_blocking=True),
-            prompt_tokens=prompt_tensor.to(device=device, non_blocking=True),
-            output_tokens=output_tensor.to(device=device, non_blocking=True),
-            sampling_seeds=sampling_seeds_gpu,
-            sample_indices=sample_indices_t.to(device=device,
-                                               non_blocking=True),
-            extra_seeds=extra_seeds_gpu,
-        )
+            # Because the memory is pinned, we can do non-blocking
+            # transfer to device.
+
+            # How many seeds the sample operation itself will need.
+            num_base_seeds = sampling_seeds_t.shape[0] - extra_seeds_to_generate
+            sampling_seeds_gpu = sampling_seeds_t.to(device=device,
+                                                    non_blocking=True)
+            extra_seeds_gpu = sampling_seeds_gpu[num_base_seeds:]
+            if not extra_seeds_gpu.numel():
+                extra_seeds_gpu = None
+            sampling_seeds_gpu = sampling_seeds_gpu[:num_base_seeds]
+
+            return cls(
+                temperatures=temperatures_t.to(device=device, non_blocking=True),
+                top_ps=top_ps_t.to(device=device, non_blocking=True),
+                top_ks=top_ks_t.to(device=device, non_blocking=True),
+                min_ps=min_ps_t.to(device=device, non_blocking=True),
+                presence_penalties=presence_penalties_t.to(device=device,
+                                                        non_blocking=True),
+                frequency_penalties=frequency_penalties_t.to(device=device,
+                                                            non_blocking=True),
+                repetition_penalties=repetition_penalties_t.to(device=device,
+                                                            non_blocking=True),
+                prompt_tokens=prompt_tensor.to(device=device, non_blocking=True),
+                output_tokens=output_tensor.to(device=device, non_blocking=True),
+                sampling_seeds=sampling_seeds_gpu,
+                sample_indices=sample_indices_t.to(device=device,
+                                                non_blocking=True),
+                extra_seeds=extra_seeds_gpu,
+            )
 
     @staticmethod
     def _get_sequence_seeds(
