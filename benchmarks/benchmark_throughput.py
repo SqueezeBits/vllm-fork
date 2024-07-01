@@ -4,7 +4,9 @@ import json
 import random
 import time
 from typing import List, Optional, Tuple
+import pandas as pd
 
+import numpy as np
 import torch
 from tqdm import tqdm
 from transformers import (AutoModelForCausalLM, AutoTokenizer,
@@ -80,6 +82,8 @@ def run_vllm(
     max_num_batched_tokens: int,
     gpu_memory_utilization: float = 0.9,
     download_dir: Optional[str] = None,
+    enable_1d_query: Optional[bool] = False,
+    enable_piggybacking: Optional[bool] = False,
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -100,6 +104,8 @@ def run_vllm(
         download_dir=download_dir,
         enable_chunked_prefill=enable_chunked_prefill,
         max_num_batched_tokens=max_num_batched_tokens,
+        enable_1d_query=enable_1d_query,
+        enable_piggybacking=enable_piggybacking,
     )
 
     # Add the requests to the engine.
@@ -110,7 +116,7 @@ def run_vllm(
         sampling_params.append(
             SamplingParams(
                 n=n,
-                temperature=0.0 if use_beam_search else 1.0,
+                temperature=0.0, #if use_beam_search else 1.0,
                 top_p=1.0,
                 use_beam_search=use_beam_search,
                 ignore_eos=True,
@@ -118,7 +124,9 @@ def run_vllm(
             ))
 
     start = time.perf_counter()
-    llm.generate(prompts, sampling_params, use_tqdm=True)
+    outputs = llm.generate(prompt_token_ids=prompts, sampling_params=sampling_params, use_tqdm=True)
+    for output in outputs:
+        print(f"Outputs: {output.outputs[0].text}, {output.outputs[0].token_ids}")
     end = time.perf_counter()
     return end - start
 
@@ -204,19 +212,24 @@ def run_mii(
 def main(args: argparse.Namespace):
     print(args)
     random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
 
     # Sample the requests.
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer, trust_remote_code=args.trust_remote_code)
     if args.dataset is None:
-        # Synthesize a prompt with the given input length.
-        prompt = "hi" * (args.input_len - 1)
-        requests = [(prompt, args.input_len, args.output_len)
-                    for _ in range(args.num_prompts)]
+        # TODO: debug the error when the input is prompt not token_ids.
+        vocab_size = tokenizer.vocab_size
+        prompts_tok_ids = [torch.randint(0, vocab_size, (args.input_len,)).tolist() for _ in range(args.num_prompts)]
     else:
-        requests = sample_requests(args.dataset, args.num_prompts, tokenizer,
-                                   args.output_len)
-
+        dataframe = pd.read_pickle(args.dataset)
+        prompts_tok_ids = dataframe["tok_input"].to_list()
+        prompts_tok_ids = prompts_tok_ids[:args.num_prompts]
+    requests = []
+    for tok_ids in prompts_tok_ids:
+        requests.append((tok_ids, len(tok_ids), args.output_len))
+    print(f"Total {len(requests)} requests.")
     if args.backend == "vllm":
         elapsed_time = run_vllm(
             requests, args.model, args.tokenizer, args.quantization,
@@ -226,7 +239,7 @@ def main(args: argparse.Namespace):
             args.quantization_param_path, args.device,
             args.enable_prefix_caching, args.enable_chunked_prefill,
             args.max_num_batched_tokens, args.gpu_memory_utilization,
-            args.download_dir)
+            args.download_dir, args.enable_1d_query, args.enable_piggybacking)
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
         elapsed_time = run_hf(requests, args.model, tokenizer, args.n,
@@ -333,7 +346,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--device",
         type=str,
-        default="cuda",
+        default="hpu",
         choices=["cuda", "cpu", "hpu"],
         help='device type for vLLM execution, supporting CUDA, CPU and HPU.')
     parser.add_argument(
@@ -343,6 +356,12 @@ if __name__ == "__main__":
     parser.add_argument("--enable-chunked-prefill",
                         action='store_true',
                         help="enable chunked prefill for vLLM backend.")
+    parser.add_argument("--enable-1d-query",
+                        action='store_true',
+                        help="If true, use 1d query instead of 2d query.")
+    parser.add_argument("--enable-piggybacking",
+                        action='store_true',
+                        help="If true, use piggybacking instead of separating prefills and decodes.")
     parser.add_argument('--max-num-batched-tokens',
                         type=int,
                         default=None,
@@ -359,8 +378,6 @@ if __name__ == "__main__":
     if args.dataset is None:
         assert args.input_len is not None
         assert args.output_len is not None
-    else:
-        assert args.input_len is None
 
     if args.backend == "vllm":
         if args.hf_max_batch_size is not None:
