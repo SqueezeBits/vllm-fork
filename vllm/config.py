@@ -592,6 +592,8 @@ class SchedulerConfig:
         enable_chunked_prefill: If True, prefill requests can be chunked based
             on the remaining max_num_batched_tokens.
         enable_1d_query: If True, use 1d query throughout the forward process
+        enable_piggybacking: If True, schedule prefill sequences and 
+            decode sequences concurrently in a batch.
     """
 
     def __init__(
@@ -604,6 +606,7 @@ class SchedulerConfig:
         delay_factor: float = 0.0,
         enable_chunked_prefill: bool = False,
         enable_1d_query: bool = False,
+        enable_piggybacking: bool = False,
     ) -> None:
         if max_num_batched_tokens is not None:
             self.max_num_batched_tokens = max_num_batched_tokens
@@ -611,7 +614,9 @@ class SchedulerConfig:
             if enable_chunked_prefill:
                 # It is the values that have the best balance between ITL
                 # and TTFT on A100. Note it is not optimized for throughput.
-                self.max_num_batched_tokens = 512
+                # The optimal value should be set after implementing chunked-prefill. 
+                # Currently setting it to 2048 to prevent prefill chunking with 1024 fixed inputs.
+                self.max_num_batched_tokens = 2048
             else:
                 # If max_model_len is too short, use 2048 as the default value
                 # for higher throughput.
@@ -626,6 +631,7 @@ class SchedulerConfig:
         self.delay_factor = delay_factor
         self.chunked_prefill_enabled = enable_chunked_prefill
         self.enable_1d_query = enable_1d_query
+        self.enable_piggybacking = enable_piggybacking
         if self.chunked_prefill_enabled and not self.enable_1d_query:
             raise NotImplementedError(
                 "chunked-prefill with 2d query is not implemented. "

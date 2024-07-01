@@ -369,6 +369,7 @@ class Scheduler:
         curr_loras: Optional[Set[int]],
         policy: Policy,
         enable_chunking: bool = False,
+        enable_piggybacking: bool = False,
     ) -> Tuple[deque, SchedulerRunningOutputs]:
         """Schedule sequence groups that are running.
 
@@ -386,6 +387,8 @@ class Scheduler:
                 chunked number of tokens are scheduled  if
                 `budget.num_batched_tokens` has not enough capacity to schedule
                 all tokens.
+            enable_piggybacking: If True, schedule prefill sequences and 
+                decode sequences concurrently in a batch.
     
         Returns:
             A tuple of remaining running queue (should be always 0) after
@@ -467,6 +470,10 @@ class Scheduler:
                 if curr_loras is not None and seq_group.lora_int_id > 0:
                     curr_loras.add(seq_group.lora_int_id)
 
+        if not enable_piggybacking:
+            if len(decode_seq_groups) != 0 and len(prefill_seq_groups) != 0:
+                raise NotImplementedError("Separating piggybacking is not implemented with prefill chunking.")
+
         return running_queue, SchedulerRunningOutputs(
             decode_seq_groups=decode_seq_groups,
             prefill_seq_groups=prefill_seq_groups,
@@ -484,6 +491,7 @@ class Scheduler:
         curr_loras: Optional[Set[int]],
         policy: Policy,
         enable_chunking: bool = False,
+        enable_piggybacking: bool = False,
     ) -> Tuple[deque, SchedulerSwappedInOutputs]:
         """Schedule sequence groups that are swapped out.
 
@@ -503,6 +511,8 @@ class Scheduler:
                 chunked number of tokens are scheduled  if
                 `budget.num_batched_tokens` has not enough capacity to schedule
                 all tokens.
+            enable_piggybacking: If True, schedule prefill sequences and 
+                decode sequences concurrently in a batch.
 
         Returns:
             A tuple of remaining swapped_queue after scheduling and
@@ -578,6 +588,10 @@ class Scheduler:
             budget.add_num_seqs(seq_group.request_id, num_new_seqs)
 
         swapped_queue.extendleft(leftover_swapped)
+
+        if not enable_piggybacking:
+            if len(decode_seq_groups) != 0 and len(prefill_seq_groups) != 0:
+                raise NotImplementedError("Separating piggybacking is not implemented with prefill chunking.")
 
         return swapped_queue, SchedulerSwappedInOutputs(
             decode_seq_groups=decode_seq_groups,
@@ -801,7 +815,7 @@ class Scheduler:
             running_queue_size=len(self.running),
         )
 
-    def _schedule_chunked_prefill(self):
+    def _schedule_chunked_prefill(self, enable_piggybacking: bool = False):
         """Schedule queued requests.
         
         Chunked prefill allows to chunk prefill requests, batch them together
@@ -814,6 +828,10 @@ class Scheduler:
         prefill and decodes requests to the same batch, while it improves
         inter token latency because decodes requests don't need to blocked
         by prefill requests.
+
+        Args:
+            enable_piggybacking: If True, schedule prefill sequences and 
+                decode sequences concurrently in a batch. 
         """
         budget = SchedulingBudget(
             token_budget=self.scheduler_config.max_num_batched_tokens,
@@ -828,25 +846,37 @@ class Scheduler:
         remaining_swapped, swapped_in = (
             self.swapped, SchedulerSwappedInOutputs.create_empty())
 
-        # Decoding should be always scheduled first by fcfs.
-        fcfs_policy = PolicyFactory.get_policy(policy_name="fcfs")
-        remaining_running, running_scheduled = self._schedule_running(
-            self.running,
-            budget,
-            curr_loras,
-            fcfs_policy,
-            enable_chunking=True)
+        if not enable_piggybacking:
+            # If piggybacking is not enabled, schedule prefills first as it does in _schedule_default()
+            for seq_group in self.running:
+                budget.add_num_seqs(seq_group.request_id,
+                                    seq_group.get_max_num_running_seqs())
+            if not self.swapped:
+                remaining_waiting, prefills = self._schedule_prefills(
+                    self.waiting, budget, curr_loras, enable_chunking=False)
 
-        # Schedule swapped out requests.
-        # If preemption happens, it means we don't have space for swap-in.
-        if len(running_scheduled.preempted) + len(
-                running_scheduled.swapped_out) == 0:
-            remaining_swapped, swapped_in = self._schedule_swapped(
-                self.swapped, budget, curr_loras, fcfs_policy)
+        if enable_piggybacking or len(prefills.seq_groups) == 0:
+            # Decoding should be always scheduled first by fcfs.
+            fcfs_policy = PolicyFactory.get_policy(policy_name="fcfs")
+            remaining_running, running_scheduled = self._schedule_running(
+                self.running,
+                budget,
+                curr_loras,
+                fcfs_policy,
+                enable_chunking=True,
+                enable_piggybacking=enable_piggybacking)
 
-        # Schedule new prefills.
-        remaining_waiting, prefills = self._schedule_prefills(
-            self.waiting, budget, curr_loras, enable_chunking=True)
+            # Schedule swapped out requests.
+            # If preemption happens, it means we don't have space for swap-in.
+            if len(running_scheduled.preempted) + len(
+                    running_scheduled.swapped_out) == 0:
+                remaining_swapped, swapped_in = self._schedule_swapped(
+                    self.swapped, budget, curr_loras, fcfs_policy, enable_piggybacking=enable_piggybacking)
+
+        if enable_piggybacking:
+            # Schedule new prefills.
+            remaining_waiting, prefills = self._schedule_prefills(
+                self.waiting, budget, curr_loras, enable_chunking=True)
 
         assert (budget.num_batched_tokens <=
                 self.scheduler_config.max_num_batched_tokens)
@@ -869,6 +899,14 @@ class Scheduler:
         # Update swapped requests.
         self.swapped = remaining_swapped
         self.swapped.extend(running_scheduled.swapped_out)
+
+        if not enable_piggybacking:
+            num_prefill_seqs = len(prefills.seq_groups) + len(running_scheduled.prefill_seq_groups) + len(swapped_in.prefill_seq_groups)
+            num_decode_seqs = len(running_scheduled.decode_seq_groups) + len(swapped_in.decode_seq_groups)
+            assert num_prefill_seqs == 0 or num_decode_seqs == 0, \
+                (f"prefills: {len(prefills.seq_groups)}, {len(running_scheduled.prefill_seq_groups)}, {len(swapped_in.prefill_seq_groups)} / " +
+                f"decodes: {len(running_scheduled.decode_seq_groups)}, {len(swapped_in.decode_seq_groups)}")
+
         return SchedulerOutputs(
             scheduled_seq_groups=(prefills.seq_groups +
                                   running_scheduled.prefill_seq_groups +
@@ -891,7 +929,7 @@ class Scheduler:
     def _schedule(self) -> SchedulerOutputs:
         """Schedule queued requests."""
         if self.scheduler_config.chunked_prefill_enabled:
-            return self._schedule_chunked_prefill()
+            return self._schedule_chunked_prefill(self.scheduler_config.enable_piggybacking)
         else:
             return self._schedule_default()
 

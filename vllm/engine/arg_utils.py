@@ -70,6 +70,8 @@ class EngineArgs:
     num_lookahead_slots: int = 0
     model_loader_extra_config: Optional[dict] = None
     enable_1d_query: bool = False
+    enable_chunked_prefill: bool = False
+    enable_piggybacking: bool = False
 
     # Related to Vision-language models such as llava
     image_input_type: Optional[str] = None
@@ -77,7 +79,6 @@ class EngineArgs:
     image_input_shape: Optional[str] = None
     image_feature_size: Optional[int] = None
     scheduler_delay_factor: float = 0.0
-    enable_chunked_prefill: bool = False
 
     guided_decoding_backend: str = 'outlines'
     # Speculative decoding configuration.
@@ -565,6 +566,7 @@ class EngineArgs:
                                  speculative_config.num_lookahead_slots),
             delay_factor=self.scheduler_delay_factor,
             enable_chunked_prefill=self.enable_chunked_prefill,
+            enable_piggybacking=self.enable_piggybacking,
             enable_1d_query=self.enable_1d_query,
         )
         lora_config = LoRAConfig(

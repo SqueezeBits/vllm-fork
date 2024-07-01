@@ -199,7 +199,11 @@ class HabanaAttentionImpl(AttentionImpl):
 
         if prefill_meta := attn_metadata.prefill_metadata:
             # Prompt run.
-            if kv_cache is None or prefill_meta.block_tables.numel() == 0:
+            if True:
+            # As HabanaPagedAttention.forward_prefix is not implemented yet,
+            # always use xops.prompt_attention.
+            # Original condition: if kv_cache is None or prefill_meta.block_tables.numel() == 0:
+            # TODO(minkyu): refactor this condition branch when prefill chunking is enabled
                 # TODO: move this outside of model
                 assert prefill_meta.attn_bias is not None, 'attn_bias must be set before calling model.forward!'
                 query_shape = (batch_size, seq_len, self.num_heads, self.head_size)
