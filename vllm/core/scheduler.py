@@ -853,7 +853,7 @@ class Scheduler:
                                     seq_group.get_max_num_running_seqs())
             if not self.swapped:
                 remaining_waiting, prefills = self._schedule_prefills(
-                    self.waiting, budget, curr_loras, enable_chunking=False)
+                    self.waiting, budget, curr_loras, enable_chunking=True)
 
         if enable_piggybacking or len(prefills.seq_groups) == 0:
             # Decoding should be always scheduled first by fcfs.
