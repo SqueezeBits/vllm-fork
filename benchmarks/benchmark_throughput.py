@@ -15,7 +15,7 @@ from transformers import (AutoModelForCausalLM, AutoTokenizer,
 from vllm.model_executor.layers.quantization import QUANTIZATION_METHODS
 
 
-def sample_requests(
+def sample_conversations_requests(
     dataset_path: str,
     num_requests: int,
     tokenizer: PreTrainedTokenizerBase,
@@ -60,6 +60,34 @@ def sample_requests(
 
     return filtered_dataset
 
+def sample_requests(
+    dataset_path: str,
+    tokenizer: PreTrainedTokenizerBase,
+    num_requests: int=1024,
+    fixed_input_len: int=1024,
+    fixed_output_len: int=1024,
+    use_text_input: bool=False,
+) -> List[Tuple[List[int], int, int]]:    
+    
+    requests = []
+    
+    if dataset_path:
+        dataframe = pd.read_pickle(dataset_path)
+        if use_text_input:
+            prompts = dataframe["input"].to_list()[:num_requests]
+        else:
+            prompts = dataframe["tok_input"].to_list()[:num_requests]
+        requests = [(prompt, len(prompt), fixed_output_len) for prompt in prompts]
+    else:
+        if use_text_input:
+            prompt = "hi" * fixed_input_len
+            requests = [(prompt, fixed_input_len, fixed_output_len) for _ in range(num_requests)]
+        else:
+            vocab_size = tokenizer.vocab_size
+            prompts_tok_ids = [torch.randint(0, vocab_size, (fixed_input_len,)).tolist() for _ in range(num_requests)]
+            requests = [(tok_ids, len(tok_ids), fixed_output_len) for tok_ids in prompts_tok_ids]
+    
+    return requests
 
 def run_vllm(
     requests: List[Tuple[str, int, int]],
@@ -84,6 +112,8 @@ def run_vllm(
     download_dir: Optional[str] = None,
     enable_1d_query: Optional[bool] = False,
     enable_piggybacking: Optional[bool] = False,
+    use_text_input: Optional[bool] = False,
+    print_outputs: Optional[bool] = False,
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -124,136 +154,53 @@ def run_vllm(
             ))
 
     start = time.perf_counter()
-    outputs = llm.generate(prompt_token_ids=prompts, sampling_params=sampling_params, use_tqdm=True)
-    for output in outputs:
-        print(f"Outputs: {output.outputs[0].text}, {output.outputs[0].token_ids}")
+    if use_text_input:
+        outputs = llm.generate(prompts, sampling_params=sampling_params, use_tqdm=True)
+    else:
+        outputs = llm.generate(prompt_token_ids=prompts, sampling_params=sampling_params, use_tqdm=True)
+    if print_outputs:
+        print(f"Outputs: {outputs[0].outputs[0].text}, {outputs[0].outputs[0].token_ids}")
     end = time.perf_counter()
-    return end - start
-
-
-def run_hf(
-    requests: List[Tuple[str, int, int]],
-    model: str,
-    tokenizer: PreTrainedTokenizerBase,
-    n: int,
-    use_beam_search: bool,
-    max_batch_size: int,
-    trust_remote_code: bool,
-) -> float:
-    assert not use_beam_search
-    llm = AutoModelForCausalLM.from_pretrained(
-        model, torch_dtype=torch.float16, trust_remote_code=trust_remote_code)
-    if llm.config.model_type == "llama":
-        # To enable padding in the HF backend.
-        tokenizer.pad_token = tokenizer.eos_token
-    llm = llm.cuda()
-
-    pbar = tqdm(total=len(requests))
-    start = time.perf_counter()
-    batch: List[str] = []
-    max_prompt_len = 0
-    max_output_len = 0
-    for i in range(len(requests)):
-        prompt, prompt_len, output_len = requests[i]
-        # Add the prompt to the batch.
-        batch.append(prompt)
-        max_prompt_len = max(max_prompt_len, prompt_len)
-        max_output_len = max(max_output_len, output_len)
-        if len(batch) < max_batch_size and i != len(requests) - 1:
-            # Check if we can add more requests to the batch.
-            _, next_prompt_len, next_output_len = requests[i + 1]
-            if (max(max_prompt_len, next_prompt_len) +
-                    max(max_output_len, next_output_len)) <= 2048:
-                # We can add more requests to the batch.
-                continue
-
-        # Generate the sequences.
-        input_ids = tokenizer(batch, return_tensors="pt",
-                              padding=True).input_ids
-        llm_outputs = llm.generate(
-            input_ids=input_ids.cuda(),
-            do_sample=not use_beam_search,
-            num_return_sequences=n,
-            temperature=1.0,
-            top_p=1.0,
-            use_cache=True,
-            max_new_tokens=max_output_len,
-        )
-        # Include the decoding time.
-        tokenizer.batch_decode(llm_outputs, skip_special_tokens=True)
-        pbar.update(len(batch))
-
-        # Clear the batch.
-        batch = []
-        max_prompt_len = 0
-        max_output_len = 0
-    end = time.perf_counter()
-    return end - start
-
-
-def run_mii(
-    requests: List[Tuple[str, int, int]],
-    model: str,
-    tensor_parallel_size: int,
-    output_len: int,
-) -> float:
-    from mii import client, serve
-    llm = serve(model, tensor_parallel=tensor_parallel_size)
-    prompts = [prompt for prompt, _, _ in requests]
-
-    start = time.perf_counter()
-    llm.generate(prompts, max_new_tokens=output_len)
-    end = time.perf_counter()
-    client = client(model)
-    client.terminate_server()
-    return end - start
-
+    elapsed_time = end - start
+    return outputs, elapsed_time
 
 def main(args: argparse.Namespace):
     print(args)
+    
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
     # Sample the requests.
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.tokenizer, trust_remote_code=args.trust_remote_code)
-    if args.dataset is None:
-        # TODO: debug the error when the input is prompt not token_ids.
-        vocab_size = tokenizer.vocab_size
-        prompts_tok_ids = [torch.randint(0, vocab_size, (args.input_len,)).tolist() for _ in range(args.num_prompts)]
-    else:
-        dataframe = pd.read_pickle(args.dataset)
-        prompts_tok_ids = dataframe["tok_input"].to_list()
-        prompts_tok_ids = prompts_tok_ids[:args.num_prompts]
-    requests = []
-    for tok_ids in prompts_tok_ids:
-        requests.append((tok_ids, len(tok_ids), args.output_len))
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=args.trust_remote_code)
+    
+    requests = sample_requests(
+        args.dataset, 
+        tokenizer, 
+        args.num_prompts, 
+        args.input_len, 
+        args.output_len, 
+        args.use_text_input)            
+
+    outputs, elapsed_time = run_vllm(
+        requests, args.model, args.tokenizer, args.quantization,
+        args.tensor_parallel_size, args.seed, args.n, args.use_beam_search,
+        args.trust_remote_code, args.dtype, args.max_model_len,
+        args.enforce_eager, args.kv_cache_dtype,
+        args.quantization_param_path, args.device,
+        args.enable_prefix_caching, args.enable_chunked_prefill,
+        args.max_num_batched_tokens, args.gpu_memory_utilization,
+        args.download_dir, args.enable_1d_query, args.enable_piggybacking, 
+        args.use_text_input, args.print_outputs)
+
+    total_input_tokens = sum(input_len for _, input_len, _ in requests)
+    total_output_tokens = [len(outputs[i].outputs[0].token_ids) for i in range(len(outputs))]
     print(f"Total {len(requests)} requests.")
-    if args.backend == "vllm":
-        elapsed_time = run_vllm(
-            requests, args.model, args.tokenizer, args.quantization,
-            args.tensor_parallel_size, args.seed, args.n, args.use_beam_search,
-            args.trust_remote_code, args.dtype, args.max_model_len,
-            args.enforce_eager, args.kv_cache_dtype,
-            args.quantization_param_path, args.device,
-            args.enable_prefix_caching, args.enable_chunked_prefill,
-            args.max_num_batched_tokens, args.gpu_memory_utilization,
-            args.download_dir, args.enable_1d_query, args.enable_piggybacking)
-    elif args.backend == "hf":
-        assert args.tensor_parallel_size == 1
-        elapsed_time = run_hf(requests, args.model, tokenizer, args.n,
-                              args.use_beam_search, args.hf_max_batch_size,
-                              args.trust_remote_code)
-    elif args.backend == "mii":
-        elapsed_time = run_mii(requests, args.model, args.tensor_parallel_size,
-                               args.output_len)
-    else:
-        raise ValueError(f"Unknown backend: {args.backend}")
-    total_num_tokens = sum(prompt_len + output_len
-                           for _, prompt_len, output_len in requests)
+    print(f"Total latency: {elapsed_time} s")
+    print(f"Total input tokens: {total_input_tokens}")
+    print(f"Total generated tokens: {sum(total_output_tokens)}")
     print(f"Throughput: {len(requests) / elapsed_time:.2f} requests/s, "
-          f"{total_num_tokens / elapsed_time:.2f} tokens/s")
+          f"{(total_input_tokens+sum(total_output_tokens)) / elapsed_time:.2f} tokens/s")
 
 
 if __name__ == "__main__":
@@ -372,6 +319,12 @@ if __name__ == "__main__":
                         default=None,
                         help='directory to download and load the weights, '
                         'default to the default cache dir of huggingface')
+    parser.add_argument("--use-text-input",
+                        action="store_true",
+                        help="Use text input instead of token ids.")
+    parser.add_argument("--print-outputs",
+                        action="store_true",
+                        help="Print outputs.")
     args = parser.parse_args()
     if args.tokenizer is None:
         args.tokenizer = args.model
