@@ -1051,11 +1051,15 @@ class HabanaModelRunner:
             self.profiler.start('internal', base_event_name)
 
             real_batch_size = len(seq_group_metadata_list)
-            bucket_cfg = self.prompt_bs_bucket_cfg if is_prompt else self.decode_bs_bucket_cfg
-            batch_size_padded = find_bucket(real_batch_size, bucket_cfg)
-            batch_size_padding = batch_size_padded - real_batch_size
-            seq_group_metadata_list = seq_group_metadata_list.copy()
-            seq_group_metadata_list.extend(seq_group_metadata_list[0] for _ in range(batch_size_padding))
+            if not self.scheduler_config.enable_1d_query:
+                # TODO(minkyu): configure buckets for 1d query
+                bucket_cfg = self.prompt_bs_bucket_cfg if is_prompt else self.decode_bs_bucket_cfg
+                batch_size_padded = find_bucket(real_batch_size, bucket_cfg)
+                batch_size_padding = batch_size_padded - real_batch_size
+                seq_group_metadata_list = seq_group_metadata_list.copy()
+                seq_group_metadata_list.extend(seq_group_metadata_list[0] for _ in range(batch_size_padding))
+            else:
+                batch_size_padded = 0
         with self.profiler.record_event('internal', 'prepare_input_tensors'):
             (input_tokens, input_positions, attn_metadata, sampling_metadata,
             lora_requests, lora_mapping, multi_modal_input
