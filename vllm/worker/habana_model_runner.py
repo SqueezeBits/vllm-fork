@@ -134,17 +134,19 @@ class HpuModelAdapter():
                 #FIXME: Restore sliding window support
                 #if self.sliding_window is not None:
             else:
-                prompt_lens = prefill_metadata.seq_lens
-                assert seq_len == sum(prompt_lens)
+                prompt_lens_t = prefill_metadata.query_lens_tensor
+                context_lens_t = prefill_metadata.context_lens_tensor
+                assert seq_len == torch.sum(prompt_lens_t)
+                assert prompt_lens_t.size() == context_lens_t.size()
+                assert batch_size == 1
                 # TODO(minkyu): check masks when input has padding
-                masks_per_prompt = [torch.ones(size, size, device=device, dtype=torch.bool) for size in prompt_lens]
-                prompt_mask = torch.block_diag(*masks_per_prompt)
-                causal_mask = torch.tril(
-                    torch.ones((batch_size, 1, seq_len, seq_len), device=device, dtype=torch.bool)
-                )
-                mask = causal_mask.logical_and(prompt_mask)
+                cur_masks = [torch.tril(torch.ones((size, size), device=device, dtype=torch.bool)) for size in prompt_lens_t]
+                past_masks = [torch.ones((q_len, past_kv_len), device=device, dtype=torch.bool) for q_len, past_kv_len in zip(prompt_lens_t, context_lens_t)]
+                masks_per_prompt = [torch.cat((past, cur), dim=1) for past, cur in zip(past_masks, cur_masks)]
+                mask = torch.block_diag(*masks_per_prompt)
                 attn_bias = (torch.zeros_like(mask, dtype=dtype)
-                            .masked_fill_(mask==0, torch.finfo(dtype).min))
+                             .masked_fill_(mask==0, torch.finfo(dtype).min)
+                             .view(1, 1, *mask.shape))
             prefill_metadata = prefill_metadata._replace(attn_bias=attn_bias)
             attn_metadata = attn_metadata._replace(prefill_metadata=prefill_metadata)
             return attn_metadata
@@ -172,6 +174,7 @@ class HpuModelAdapter():
             torch.bfloat16,
             enable_1d_query=enable_1d_query,
         )
+        print(f"input_shape!!! {kwargs['input_ids'].shape}, {kwargs['kv_caches'][0][0].shape if kwargs['kv_caches'][0] is not None else None}, {selected_token_indices}")
         hidden_states = self.model(*args, **kwargs)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
         hidden_states = hidden_states.index_select(0, selected_token_indices)
@@ -725,6 +728,7 @@ class HabanaModelRunner:
         input_tokens = torch.unsqueeze(input_tokens, 0)
         input_positions = torch.unsqueeze(input_positions, 0)
         slot_mapping = torch.unsqueeze(slot_mapping, 0)
+
         attn_metadata = self.attn_backend.make_metadata(
             is_prompt=True,
             seq_lens=seq_lens,
@@ -736,6 +740,7 @@ class HabanaModelRunner:
             context_lens_tensor=context_lens_tensor,
             block_tables=block_tables,
             use_cuda_graph=False,
+            query_lens_tensor=query_lens_tensor,
         )
         return PreparePromptMetadata(
             input_tokens=input_tokens,
@@ -1024,8 +1029,8 @@ class HabanaModelRunner:
                                     ['block_tables',
                                      'seq_lens_tensor',
                                      'attn_bias',
-                                     'max_query_len',
-                                     'seq_lens'])
+                                     'query_lens_tensor',
+                                     'context_lens_tensor'])
         decode_metadata = subtuple(metadata.decode_metadata,
                                    'TrimmedDecodeMetadata',
                                    ['block_tables',

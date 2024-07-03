@@ -105,6 +105,9 @@ class HabanaAttentionMetadata(AttentionMetadataPerStage, HabanaPagedAttentionMet
     # Maximum sequence length in the batch.
     max_seq_len: Optional[int] = None
 
+    # A tensor of query lengths is the current chunk
+    query_lens_tensor: Optional[torch.Tensor] = None
+
     def __post_init__(self):
         # Set during the execution of the first attention op.
         # It is a list because it is needed to set per prompt
