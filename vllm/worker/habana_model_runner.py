@@ -174,7 +174,6 @@ class HpuModelAdapter():
             torch.bfloat16,
             enable_1d_query=enable_1d_query,
         )
-        print(f"input_shape!!! {kwargs['input_ids'].shape}, {kwargs['kv_caches'][0][0].shape if kwargs['kv_caches'][0] is not None else None}, {selected_token_indices}")
         hidden_states = self.model(*args, **kwargs)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
         hidden_states = hidden_states.index_select(0, selected_token_indices)

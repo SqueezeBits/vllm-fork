@@ -159,7 +159,8 @@ def run_vllm(
     else:
         outputs = llm.generate(prompt_token_ids=prompts, sampling_params=sampling_params, use_tqdm=True)
     if print_outputs:
-        print(f"Outputs: {outputs[0].outputs[0].text}, {outputs[0].outputs[0].token_ids}")
+        for output in outputs:
+            print(f"Outputs: {output.outputs[0].text}, {output.outputs[0].token_ids}")
     end = time.perf_counter()
     elapsed_time = end - start
     return outputs, elapsed_time

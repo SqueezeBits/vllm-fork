@@ -232,8 +232,6 @@ class HabanaAttentionImpl(AttentionImpl):
                         self.num_heads,
                         self.num_kv_heads
                     )
-                    # TODO(minkyu): concat should follow the mask.
-                    # Consider modifing the mask side to always have the past kv at front.
                     key = torch.cat((past_key.squeeze(0)[:context_len], key))
                     value = torch.cat((past_value.squeeze(0)[:context_len], value))
                     kv_shape = (batch_size, seq_len_kv + context_len, self.num_kv_heads, self.head_size)
