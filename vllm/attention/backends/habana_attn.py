@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Tuple, Type
 
 import torch
 import math
+from vllm.hpu import ops
 import vllm.hpu.xops as xops
 from vllm.hpu.attn_bias import (AttentionBias,
                                 LowerTriangularMaskWithTensorBias)
@@ -202,15 +203,40 @@ class HabanaAttentionImpl(AttentionImpl):
 
         if prefill_meta := attn_metadata.prefill_metadata:
             # Prompt run.
-            if True:
             # As HabanaPagedAttention.forward_prefix is not implemented yet,
             # always use xops.prompt_attention.
-            # Original condition: if kv_cache is None or prefill_meta.block_tables.numel() == 0:
-            # TODO(minkyu): refactor this condition branch when prefill chunking is enabled
+            # TODO: restore the original condition after HabanaPagedAttention.forward_prefix has been implemented
+            # if kv_cache is None or prefill_meta.block_tables.numel() == 0:
+            if True:
                 # TODO: move this outside of model
                 assert prefill_meta.attn_bias is not None, 'attn_bias must be set before calling model.forward!'
                 query_shape = (batch_size, seq_len, self.num_heads, self.head_size)
                 kv_shape = (batch_size, seq_len_kv, self.num_kv_heads, self.head_size)
+                if torch.sum(prefill_meta.context_lens_tensor) > 0:
+                    # Concat past chunked kv
+                    assert torch.sum(prefill_meta.context_lens_tensor != 0) <= 1
+                    context_len = torch.sum(prefill_meta.context_lens_tensor).item()
+                    context_prompt_idx = torch.argmax(prefill_meta.context_lens_tensor)
+                    past_block_num = (context_len - 1) // value_cache.shape[1] + 1
+                    past_key = ops.fetch_from_cache(
+                        key_cache, 
+                        prefill_meta.block_tables[context_prompt_idx, :past_block_num].unsqueeze(0),
+                        seq_len,
+                        self.num_heads,
+                        self.num_kv_heads
+                    )
+                    past_value = ops.fetch_from_cache(
+                        value_cache,
+                        prefill_meta.block_tables[context_prompt_idx, :past_block_num].unsqueeze(0),
+                        seq_len,
+                        self.num_heads,
+                        self.num_kv_heads
+                    )
+                    # TODO(minkyu): concat should follow the mask.
+                    # Consider modifing the mask side to always have the past kv at front.
+                    key = torch.cat((past_key.squeeze(0)[:context_len], key))
+                    value = torch.cat((past_value.squeeze(0)[:context_len], value))
+                    kv_shape = (batch_size, seq_len_kv + context_len, self.num_kv_heads, self.head_size)
                 out = xops.prompt_attention(
                     query.view(query_shape),
                     key.view(kv_shape),

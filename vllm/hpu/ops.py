@@ -30,14 +30,15 @@ def gelu_fast(output, input):
     raise NotImplementedError
 
 
-def fetch_from_cache(cache, blocks, seq_len, query_heads, kv_heads, permutations):
+def fetch_from_cache(cache, blocks, seq_len, query_heads, kv_heads, permutations = None):
     blocks_list = blocks.flatten()
     data = cache.index_select(0, blocks_list)
     if seq_len > 1:
         data = data.view(blocks.shape[0], -1, cache.shape[2], cache.shape[3])
-    data = data.permute(permutations)
-    if query_heads != kv_heads:
-        data = data.unflatten(1, (kv_heads, 1))
+    if permutations is not None:
+        data = data.permute(permutations)
+        if query_heads != kv_heads:
+            data = data.unflatten(1, (kv_heads, 1))
     return data
 
 

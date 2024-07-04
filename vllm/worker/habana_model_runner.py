@@ -134,12 +134,12 @@ class HpuModelAdapter():
                 #FIXME: Restore sliding window support
                 #if self.sliding_window is not None:
             else:
+                # TODO(minkyu): benchmark overheads
                 prompt_lens_t = prefill_metadata.query_lens_tensor
                 context_lens_t = prefill_metadata.context_lens_tensor
                 assert seq_len == torch.sum(prompt_lens_t)
                 assert prompt_lens_t.size() == context_lens_t.size()
                 assert batch_size == 1
-                # TODO(minkyu): check masks when input has padding
                 cur_masks = [torch.tril(torch.ones((size, size), device=device, dtype=torch.bool)) for size in prompt_lens_t]
                 past_masks = [torch.ones((q_len, past_kv_len), device=device, dtype=torch.bool) for q_len, past_kv_len in zip(prompt_lens_t, context_lens_t)]
                 masks_per_prompt = [torch.cat((past, cur), dim=1) for past, cur in zip(past_masks, cur_masks)]
