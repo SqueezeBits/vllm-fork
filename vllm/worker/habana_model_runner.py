@@ -164,10 +164,12 @@ class HpuModelAdapter():
         enable_1d_query = kwargs.pop("enable_1d_query", False)
         kwargs.pop("chunked_prefill_enabled")
         input_ids = kwargs['input_ids']
+        
+        attn_metadata = kwargs['attn_metadata']
         kwargs['attn_metadata'] = self._set_attn_bias(
-            kwargs['attn_metadata'],
+            attn_metadata,
             input_ids.size(0),
-            input_ids.size(1),
+            attn_metadata.num_prefill_tokens,
             input_ids.device,
             torch.bfloat16,
             enable_1d_query=enable_1d_query,
@@ -185,8 +187,8 @@ class HpuModelAdapter():
 
 
 class PreparePromptMetadata(NamedTuple):
-    input_tokens: List[int]
-    input_positions: List[int]
+    input_tokens: torch.Tensor
+    input_positions: torch.Tensor
     attn_metadata: Optional[AttentionMetadataPerStage]
     seq_lens: List[int]
     query_lens: List[int]
@@ -194,13 +196,13 @@ class PreparePromptMetadata(NamedTuple):
     lora_prompt_mapping: List[int]
     lora_requests: Set[LoRARequest]
     multi_modal_input: Optional[torch.Tensor]
-    slot_mapping: List[int]
+    slot_mapping: torch.Tensor 
 
     @classmethod
-    def empty(cls):
+    def empty(cls, device):
         return PreparePromptMetadata(
-            input_tokens=[],
-            input_positions=[],
+            input_tokens=torch.tensor([[]], dtype=torch.long, device=device),
+            input_positions=torch.tensor([[]], dtype=torch.long, device=device),
             attn_metadata=None,
             seq_lens=[],
             query_lens=[],
@@ -208,29 +210,29 @@ class PreparePromptMetadata(NamedTuple):
             lora_prompt_mapping=[],
             lora_requests=set(),
             multi_modal_input=None,
-            slot_mapping=[],
+            slot_mapping=torch.tensor([[]], dtype=torch.long, device=device),
         )
 
 
 class PrepareDecodeMetadata(NamedTuple):
-    input_tokens: List[int]
-    input_positions: List[int]
-    attn_metadata: Optional[AttentionMetadata]
+    input_tokens: torch.Tensor
+    input_positions: torch.Tensor
+    attn_metadata: Optional[AttentionMetadataPerStage]
     lora_index_mapping: List[int]
     lora_prompt_mapping: List[int]
     lora_requests: Set[LoRARequest]
-    slot_mapping: List[int]
+    slot_mapping: torch.Tensor
 
     @classmethod
-    def empty(cls):
+    def empty(cls, device):
         return PrepareDecodeMetadata(
-            input_tokens=[],
-            input_positions=[],
+            input_tokens=torch.tensor([[]], dtype=torch.long, device=device),
+            input_positions=torch.tensor([[]], dtype=torch.long, device=device),
             attn_metadata=None,
             lora_index_mapping=[],
             lora_prompt_mapping=[],
             lora_requests=set(),
-            slot_mapping=[],
+            slot_mapping=torch.tensor([[]], dtype=torch.long, device=device),
         )
 
 
@@ -287,8 +289,8 @@ class HabanaModelRunner:
             self.model_config.dtype if model_config is not None else None)
 
         # Lazy initialization
-        self.lora_manager: LRUCacheWorkerLoRAManager = None
-        self.model: torch.nn.Module = None
+        self.lora_manager: LRUCacheWorkerLoRAManager | None = None
+        self.model: torch.nn.Module | None = None
 
         self._setup_buckets()
 
@@ -368,7 +370,7 @@ class HabanaModelRunner:
         multi_modal_input_list: List[torch.Tensor] = []
 
         if len(seq_group_metadata_list) == 0:
-            return PreparePromptMetadata.empty()
+            return PreparePromptMetadata.empty(self.device)
 
         for seq_group_metadata in seq_group_metadata_list:
             assert seq_group_metadata.is_prompt
@@ -571,7 +573,7 @@ class HabanaModelRunner:
         multi_modal_input_list: List[torch.Tensor] = []
 
         if len(seq_group_metadata_list) == 0:
-            return PreparePromptMetadata.empty()
+            return PreparePromptMetadata.empty(self.device)
         
         for seq_group_metadata in seq_group_metadata_list:
             assert seq_group_metadata.is_prompt
@@ -750,23 +752,24 @@ class HabanaModelRunner:
             slot_mapping=slot_mapping,
         )
 
-
-
     def _prepare_decode(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
-    ) -> PrepareDecodeMetadata:
-        input_tokens: List[List[int]] = []
-        input_positions: List[List[int]] = []
-        slot_mapping: List[List[int]] = []
-        seq_lens: List[int] = []
-        block_tables: List[List[int]] = []
+        chunked_prefill_enabled: bool = False
+    ) -> PrepareDecodeMetadata: 
+        input_tokens: List[List[int]] | torch.Tensor = []
+        input_positions: List[List[int]] | torch.Tensor = []
+        slot_mapping: List[List[int]] | torch.Tensor = []
+        seq_lens: List[int] | torch.Tensor = []
+        block_tables: List[List[int]] | torch.Tensor = []
+        
+        # TODO(huijong): restore lora functionality for chunked prefill
         lora_index_mapping: List[int] = []
         lora_prompt_mapping: List[int] = []
         lora_requests: Set[LoRARequest] = set()
 
         if len(seq_group_metadata_list) == 0:
-            return PrepareDecodeMetadata.empty()
+            return PrepareDecodeMetadata.empty(self.device)
 
         for seq_group_metadata in seq_group_metadata_list:
             assert not seq_group_metadata.is_prompt
@@ -776,6 +779,7 @@ class HabanaModelRunner:
             lora_id = seq_group_metadata.lora_int_id
 
             if lora_id > 0:
+                assert seq_group_metadata.lora_request
                 lora_requests.add(seq_group_metadata.lora_request)
 
             for seq_id in seq_ids:
@@ -804,22 +808,18 @@ class HabanaModelRunner:
                                              self.block_size)
                     block_table = block_table[-sliding_window_blocks:]
                 block_tables.append(block_table)
-
-        input_tokens = torch.tensor(input_tokens,
-                                    dtype=torch.long,
-                                    device=self.device)
-        input_positions = torch.tensor(input_positions,
-                                       dtype=torch.long,
-                                       device=self.device)
-        slot_mapping = torch.tensor(slot_mapping,
-                                    dtype=torch.long,
-                                    device=self.device)
-        seq_lens_tensor = torch.tensor(seq_lens,
-                                       dtype=torch.int,
-                                       device=self.device)
-
-        max_block_table_len = max(
-            len(block_table) for block_table in block_tables)
+            
+        # convert inputs to tensor for HPU compatibility
+        input_tokens = torch.tensor(input_tokens, dtype=torch.long, device=self.device)
+        input_positions = torch.tensor(input_positions, dtype=torch.long, device=self.device)
+        slot_mapping = torch.tensor(slot_mapping, dtype=torch.long, device=self.device)
+        if chunked_prefill_enabled:
+            input_tokens = input_tokens.reshape(1, -1)
+            input_positions = input_positions.reshape(1, -1)
+            slot_mapping = slot_mapping.reshape(1, -1)
+        
+        seq_lens_tensor = torch.tensor(seq_lens, dtype=torch.int, device=self.device)
+        max_block_table_len = max(len(block_table) for block_table in block_tables)
         block_tables = make_tensor_with_pad(
             block_tables,
             max_len=max_block_table_len,
@@ -827,6 +827,7 @@ class HabanaModelRunner:
             dtype=torch.int,
             device=self.device,
         )
+        
         attn_metadata = self.attn_backend.make_metadata(
             is_prompt=False,
             seq_lens=None,
@@ -838,6 +839,7 @@ class HabanaModelRunner:
             block_tables=block_tables,
             use_cuda_graph=False,
         )
+                
         return PrepareDecodeMetadata(
             input_tokens=input_tokens,
             input_positions=input_positions,
@@ -854,6 +856,9 @@ class HabanaModelRunner:
         enable_1d_query: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor, AttentionMetadata, SamplingMetadata,
                Set[LoRARequest], LoRAMapping, torch.Tensor]:
+        
+        chunked_prefill_enabled =  self.scheduler_config.chunked_prefill_enabled
+        
         if self.is_driver_worker:
             prefill_reqs = []
             decode_reqs = []
@@ -884,29 +889,31 @@ class HabanaModelRunner:
                 decode_lora_prompt_mapping,
                 decode_lora_requests,
                 decode_slot_mapping,
-            ) = self._prepare_decode(decode_reqs)
+            ) = self._prepare_decode(decode_reqs, chunked_prefill_enabled)                       
+                        
             sampling_metadata = SamplingMetadata.prepare(
                 seq_group_metadata_list, seq_lens, query_lens, self.device,
                 self.pin_memory)
 
-            if not self.scheduler_config.chunked_prefill_enabled:
-                assert (len(prefill_reqs) and len(decode_reqs)) == 0
+            if not chunked_prefill_enabled:
+                # currently HPU does not support mixed batches when chunked prefill is disabled
+                assert not (len(prefill_reqs) and len(decode_reqs))
 
             num_prefills = len(seq_lens)
-            num_prefill_tokens = len(input_tokens)
-            num_decode_tokens = len(decode_input_tokens)
+            num_prefill_tokens = input_tokens.nelement()
+            num_decode_tokens = decode_input_tokens.nelement()
+                        
+            if not chunked_prefill_enabled:
+                # NOTE(kzawora): Here we diverge from GPU code - we don't support mixed batches, so we either use decode or prefill inputs, without coalescing.
+                assert (num_prefills == 0 and num_decode_tokens > 0) or (num_prefills > 0 and num_decode_tokens == 0), "HPU does not support mixed batches!"
+                if num_decode_tokens > 0:
+                    input_tokens = decode_input_tokens
+                    input_positions = decode_input_positions
+                    slot_mapping = decode_slot_mapping
+                    lora_index_mapping = decode_lora_index_mapping
+                    lora_prompt_mapping = decode_lora_prompt_mapping
+                    lora_requests = decode_lora_requests
 
-            # NOTE(kzawora): Here we diverge from GPU code - we don't support mixed batches, so we either use decode or prefill inputs, without coalescing.
-            assert (num_prefills == 0 and num_decode_tokens > 0) or (num_prefills > 0 and num_decode_tokens == 0), "HPU does not support mixed batches!"
-            if num_decode_tokens > 0:
-                input_tokens = decode_input_tokens
-                input_positions = decode_input_positions
-                slot_mapping = decode_slot_mapping
-                lora_index_mapping = decode_lora_index_mapping
-                lora_prompt_mapping = decode_lora_prompt_mapping
-                lora_requests = decode_lora_requests
-
-            if not enable_1d_query:
                 # FIXME: We need to adjust selected_token_indices to accomodate for padding
                 max_len = input_tokens.size(1)
                 paddings = [max_len - s for s in seq_lens]
@@ -914,19 +921,20 @@ class HabanaModelRunner:
                 paddings = list(itertools.accumulate(paddings))
                 paddings = torch.tensor(paddings, dtype=sampling_metadata.selected_token_indices.dtype, device=sampling_metadata.selected_token_indices.device)
                 sampling_metadata.selected_token_indices.add_(paddings)
+            else:
+                # TODO(huijong): restore lora functionality
+                input_tokens = torch.concat((input_tokens, decode_input_tokens), dim=-1)
+                input_positions = torch.concat((input_positions, decode_input_positions), dim=-1)
+                slot_mapping = torch.concat((slot_mapping, decode_slot_mapping), dim=-1)
 
             if self.lora_config:
-                lora_mapping = LoRAMapping(
-                    lora_index_mapping,
-                    lora_prompt_mapping,
-                )
+                lora_mapping = LoRAMapping(lora_index_mapping, lora_prompt_mapping)
             else:
                 lora_mapping = None
 
-            if (prefill_attn_metadata is not None
-                    and decode_attn_metadata is not None):
+            if (prefill_attn_metadata is not None and decode_attn_metadata is not None):
+                assert chunked_prefill_enabled
                 batch_type = BatchType.MIXED
-                raise NotImplementedError("Mixed batch is not supported on HPU")
             elif prefill_attn_metadata is not None:
                 batch_type = BatchType.PREFILL
             else:
@@ -948,9 +956,9 @@ class HabanaModelRunner:
             }
             if prefill_attn_metadata is not None:
                 metadata_dict.update(prefill_attn_metadata.asdict_zerocopy())
-            else:
-                assert decode_attn_metadata is not None
+            if decode_attn_metadata is not None:
                 metadata_dict.update(decode_attn_metadata.asdict_zerocopy())
+            
             broadcast_tensor_dict(metadata_dict, src=0)
 
             # Broadcast decode attn metadata for mixed batch type.
@@ -961,6 +969,9 @@ class HabanaModelRunner:
                 metadata_dict = decode_attn_metadata.asdict_zerocopy()
                 broadcast_tensor_dict(metadata_dict, src=0)
         else:
+            # TODO(huijong): handle chunked prefill with non driver worker
+            assert not chunked_prefill_enabled
+            
             metadata_dict = broadcast_tensor_dict(src=0)
             input_tokens = metadata_dict.pop("input_tokens")
             input_positions = metadata_dict.pop("input_positions")
@@ -1034,7 +1045,8 @@ class HabanaModelRunner:
         return subtuple(metadata,
                         'TrimmedMetadata',
                         ['slot_mapping',
-                         'kv_cache_dtype'],
+                         'kv_cache_dtype',
+                         'num_prefill_tokens'],
                         {'prefill_metadata': prefill_metadata,
                          'decode_metadata': decode_metadata})
 
