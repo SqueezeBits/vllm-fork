@@ -591,7 +591,6 @@ class SchedulerConfig:
             prompt latency) before scheduling next prompt.
         enable_chunked_prefill: If True, prefill requests can be chunked based
             on the remaining max_num_batched_tokens.
-        enable_1d_query: If True, use 1d query throughout the forward process
         enable_piggybacking: If True, schedule prefill sequences and 
             decode sequences concurrently in a batch.
     """
@@ -605,7 +604,6 @@ class SchedulerConfig:
         num_lookahead_slots: int = 0,
         delay_factor: float = 0.0,
         enable_chunked_prefill: bool = False,
-        enable_1d_query: bool = False,
         enable_piggybacking: bool = False,
     ) -> None:
         if max_num_batched_tokens is not None:
@@ -630,13 +628,15 @@ class SchedulerConfig:
         self.num_lookahead_slots = num_lookahead_slots
         self.delay_factor = delay_factor
         self.chunked_prefill_enabled = enable_chunked_prefill
-        self.enable_1d_query = enable_1d_query
-        self.enable_piggybacking = enable_piggybacking
-        if self.chunked_prefill_enabled and not self.enable_1d_query:
-            raise NotImplementedError(
-                "chunked-prefill with 2d query is not implemented. "
-                "Enable enable_1d_query to use chunked-prefill."
+        self.piggybacking_enabled = enable_piggybacking
+        if self.chunked_prefill_enabled and not self.piggybacking_enabled:
+            raise NotImplementedError("prefill-chunking without piggybacking is not implemented yet.")
+        if self.piggybacking_enabled and not self.chunked_prefill_enabled:
+            logger.warning(
+                "Chunked prefill must be enabled to use piggybacking. "
+                "Setting chunked_prefill_enabled to True."
             )
+            self.chunked_prefill_enabled = True
 
         self._verify_args()
 

@@ -111,14 +111,14 @@ class HpuModelAdapter():
     def __init__(self, model):
         self.model = model
 
-    def _set_attn_bias(self, attn_metadata, batch_size, seq_len, device, dtype, enable_1d_query = False):
+    def _set_attn_bias(self, attn_metadata, batch_size, seq_len, device, dtype, chunked_prefill_enabled = False):
         prefill_metadata = attn_metadata.prefill_metadata
         if prefill_metadata is None:
             return attn_metadata
         #FIXME: Restore alibi support
         #if self.alibi_slopes is None:
         if True:
-            if not enable_1d_query:
+            if not chunked_prefill_enabled:
                 seq_len = seq_len // batch_size
                 seq_lens_t = prefill_metadata.seq_lens_tensor
                 len_mask = (torch.arange(0, seq_len, device=device, dtype=torch.int32)
@@ -164,8 +164,7 @@ class HpuModelAdapter():
         if 'bypass_hpu_graphs' in kwargs:
             kwargs.pop('bypass_hpu_graphs') # required for PT eager
 
-        enable_1d_query = kwargs.pop("enable_1d_query", False)
-        kwargs.pop("chunked_prefill_enabled")
+        chunked_prefill_enabled = kwargs.pop("chunked_prefill_enabled", False)
         input_ids = kwargs['input_ids']
         
         attn_metadata = kwargs['attn_metadata']
@@ -175,7 +174,7 @@ class HpuModelAdapter():
             attn_metadata.num_prefill_tokens,
             input_ids.device,
             torch.bfloat16,
-            enable_1d_query=enable_1d_query,
+            chunked_prefill_enabled=chunked_prefill_enabled,
         )
         hidden_states = self.model(*args, **kwargs)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
@@ -858,11 +857,10 @@ class HabanaModelRunner:
     def prepare_input_tensors(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
-        enable_1d_query: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor, AttentionMetadata, SamplingMetadata,
                Set[LoRARequest], LoRAMapping, torch.Tensor]:
         
-        chunked_prefill_enabled =  self.scheduler_config.chunked_prefill_enabled
+        chunked_prefill_enabled = self.scheduler_config.chunked_prefill_enabled
         
         if self.is_driver_worker:
             prefill_reqs = []
@@ -885,7 +883,7 @@ class HabanaModelRunner:
                 lora_requests,
                 multi_modal_input,
                 slot_mapping,
-            ) = self._prepare_prompt(prefill_reqs) if not enable_1d_query else self._prepare_prompt_1d(prefill_reqs)
+            ) = self._prepare_prompt(prefill_reqs) if not chunked_prefill_enabled else self._prepare_prompt_1d(prefill_reqs)
             (
                 decode_input_tokens,
                 decode_input_positions,
@@ -1068,7 +1066,7 @@ class HabanaModelRunner:
             self.profiler.start('internal', base_event_name)
 
             real_batch_size = len(seq_group_metadata_list)
-            if not self.scheduler_config.enable_1d_query:
+            if not self.scheduler_config.chunked_prefill_enabled:
                 # TODO(minkyu): configure buckets for 1d query
                 bucket_cfg = self.prompt_bs_bucket_cfg if is_prompt else self.decode_bs_bucket_cfg
                 batch_size_padded = find_bucket(real_batch_size, bucket_cfg)
@@ -1080,7 +1078,7 @@ class HabanaModelRunner:
         with self.profiler.record_event('internal', 'prepare_input_tensors'):
             (input_tokens, input_positions, attn_metadata, sampling_metadata,
             lora_requests, lora_mapping, multi_modal_input
-            ) = self.prepare_input_tensors(seq_group_metadata_list, self.scheduler_config.enable_1d_query)
+            ) = self.prepare_input_tensors(seq_group_metadata_list)
             is_prompt = attn_metadata.prefill_metadata is not None
 
         if self.lora_config:
@@ -1112,7 +1110,6 @@ class HabanaModelRunner:
                 selected_token_indices=sampling_metadata.selected_token_indices,
                 bypass_hpu_graphs=not use_graphs,
                 chunked_prefill_enabled=self.scheduler_config.chunked_prefill_enabled,
-                enable_1d_query=self.scheduler_config.enable_1d_query,
             )
 
         # Compute the logits.
@@ -1132,7 +1129,7 @@ class HabanaModelRunner:
                 sampling_metadata=sampling_metadata,
             )
 
-        if not self.scheduler_config.enable_1d_query:
+        if not self.scheduler_config.chunked_prefill_enabled:
             output.outputs = output.outputs[:real_batch_size]
         htorch.core.mark_step()
 

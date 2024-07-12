@@ -929,7 +929,7 @@ class Scheduler:
     def _schedule(self) -> SchedulerOutputs:
         """Schedule queued requests."""
         if self.scheduler_config.chunked_prefill_enabled:
-            return self._schedule_chunked_prefill(self.scheduler_config.enable_piggybacking)
+            return self._schedule_chunked_prefill(self.scheduler_config.piggybacking_enabled)
         else:
             return self._schedule_default()
 
