@@ -109,8 +109,8 @@ class HpuRotaryEmbedding(nn.Module):
         query = query.reshape((query.shape[0], query.shape[1], query.shape[2] // self.head_size, self.head_size))
         key = key.reshape((key.shape[0], key.shape[1], key.shape[2] // self.head_size, self.head_size))
         if query.device.type == "hpu" and FusedRoPE:
-            cos = cos[positions].unsqueeze(2)
-            sin = sin[positions].unsqueeze(2)
+            cos = cos[positions].unsqueeze(2).to(query.dtype)
+            sin = sin[positions].unsqueeze(2).to(query.dtype)
                 
             query, key = FusedRoPE.apply(query, cos, sin, 0), FusedRoPE.apply(key, cos, sin, 0)
         else:
