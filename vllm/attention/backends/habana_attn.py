@@ -213,8 +213,8 @@ class HabanaAttentionImpl(AttentionImpl):
             # TODO(minkyu): refactor this condition branch when prefill chunking is enabled
                 # TODO: move this outside of model
                 assert prefill_meta.attn_bias is not None, 'attn_bias must be set before calling model.forward!'
-                query_shape = (batch_size, num_prefill_tokens, self.num_heads, self.head_size)
-                kv_shape = (batch_size, num_prefill_tokens, self.num_kv_heads, self.head_size)
+                query_shape = (batch_size, -1, self.num_heads, self.head_size)
+                kv_shape = (batch_size, -1, self.num_kv_heads, self.head_size)
                 out = xops.prompt_attention(
                     prompt_query.view(query_shape),
                     prompt_key.view(kv_shape),
@@ -223,7 +223,7 @@ class HabanaAttentionImpl(AttentionImpl):
                     p=0.0,
                     scale=self.scale,
                 )
-                prompt_output = out.reshape(batch_size, num_prefill_tokens, hidden_size)
+                prompt_output = out.reshape(batch_size, -1, hidden_size)
             else:
                 # prefix-enabled attention
                 output = HabanaPagedAttention.forward_prefix(

@@ -119,6 +119,7 @@ class HpuModelAdapter():
         #if self.alibi_slopes is None:
         if True:
             if not enable_1d_query:
+                seq_len = seq_len // batch_size
                 seq_lens_t = prefill_metadata.seq_lens_tensor
                 len_mask = (torch.arange(0, seq_len, device=device, dtype=torch.int32)
                             .view(1, seq_len)
