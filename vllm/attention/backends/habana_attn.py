@@ -182,15 +182,20 @@ class HabanaAttentionImpl(AttentionImpl):
         Returns:
             shape = [num_tokens, num_heads * head_size]
         """
-        batch_size, seq_len, hidden_size = query.shape
-        _, seq_len_kv, _ = key.shape
-
+        batch_size, _, hidden_size = query.shape                
+        num_prefill_tokens = attn_metadata.num_prefill_tokens
+        
         query = query.view(-1, self.num_heads, self.head_size)
         key = key.view(-1, self.num_kv_heads, self.head_size)
         value = value.view(-1, self.num_kv_heads, self.head_size)
+
+        prompt_query = query[:num_prefill_tokens, :, :]
+        decode_query = query[num_prefill_tokens:, :, :]
+        prompt_key = key[:num_prefill_tokens, :, :]
+        prompt_value = value[:num_prefill_tokens, :, :]
+                
         if kv_cache is not None:
-            key_cache, value_cache = HabanaPagedAttention.split_kv_cache(
-                kv_cache, self.num_kv_heads, self.head_size)
+            key_cache, value_cache = HabanaPagedAttention.split_kv_cache(kv_cache, self.num_kv_heads, self.head_size)
 
             # Reshape the input keys and values and store them in the cache.
             # If kv_cache is not provided, the new key and value tensors are
@@ -199,8 +204,10 @@ class HabanaAttentionImpl(AttentionImpl):
                                                       value_cache,
                                                       attn_metadata.slot_mapping,
                                                       attn_metadata.kv_cache_dtype,
-                                                      attn_metadata.prefill_metadata is not None)
+                                                      attn_metadata.decode_metadata is None)
 
+        prompt_output = None
+        decode_output = None
         if prefill_meta := attn_metadata.prefill_metadata:
             # Prompt run.
             # As HabanaPagedAttention.forward_prefix is not implemented yet,
@@ -210,10 +217,12 @@ class HabanaAttentionImpl(AttentionImpl):
             if True:
                 # TODO: move this outside of model
                 assert prefill_meta.attn_bias is not None, 'attn_bias must be set before calling model.forward!'
-                query_shape = (batch_size, seq_len, self.num_heads, self.head_size)
-                kv_shape = (batch_size, seq_len_kv, self.num_kv_heads, self.head_size)
+                query_shape = (batch_size, -1, self.num_heads, self.head_size)
+                kv_shape = (batch_size, -1, self.num_kv_heads, self.head_size)
                 if torch.sum(prefill_meta.context_lens_tensor) > 0:
+                    # Chunked-prefill
                     # Concat past chunked kv
+                    assert batch_size == 1
                     assert torch.sum(prefill_meta.context_lens_tensor != 0) <= 1
                     context_len = torch.sum(prefill_meta.context_lens_tensor).item()
                     context_prompt_idx = torch.argmax(prefill_meta.context_lens_tensor)
@@ -221,29 +230,29 @@ class HabanaAttentionImpl(AttentionImpl):
                     past_key = ops.fetch_from_cache(
                         key_cache, 
                         prefill_meta.block_tables[context_prompt_idx, :past_block_num].unsqueeze(0),
-                        seq_len,
+                        num_prefill_tokens,
                         self.num_heads,
                         self.num_kv_heads
                     )
                     past_value = ops.fetch_from_cache(
                         value_cache,
                         prefill_meta.block_tables[context_prompt_idx, :past_block_num].unsqueeze(0),
-                        seq_len,
+                        num_prefill_tokens,
                         self.num_heads,
                         self.num_kv_heads
                     )
-                    key = torch.cat((past_key.squeeze(0)[:context_len], key))
-                    value = torch.cat((past_value.squeeze(0)[:context_len], value))
-                    kv_shape = (batch_size, seq_len_kv + context_len, self.num_kv_heads, self.head_size)
+                    prompt_key = torch.cat((past_key.squeeze(0)[:context_len], key))
+                    prompt_value = torch.cat((past_value.squeeze(0)[:context_len], value))
+                    kv_shape = (batch_size, num_prefill_tokens + context_len, self.num_kv_heads, self.head_size)
                 out = xops.prompt_attention(
-                    query.view(query_shape),
-                    key.view(kv_shape),
-                    value.view(kv_shape),
+                    prompt_query.view(query_shape),
+                    prompt_key.view(kv_shape),
+                    prompt_value.view(kv_shape),
                     attn_bias=prefill_meta.attn_bias,
                     p=0.0,
                     scale=self.scale,
                 )
-                output = out.reshape(batch_size, seq_len, hidden_size)
+                prompt_output = out.reshape(batch_size, -1, hidden_size)
             else:
                 # prefix-enabled attention
                 output = HabanaPagedAttention.forward_prefix(
@@ -261,8 +270,8 @@ class HabanaAttentionImpl(AttentionImpl):
                 )
         if decode_meta := attn_metadata.decode_metadata:
             # Decoding run.
-            output = HabanaPagedAttention.forward_decode(
-                query,
+            decode_output = HabanaPagedAttention.forward_decode(
+                decode_query,
                 key_cache,
                 value_cache,
                 decode_meta.block_tables,
@@ -272,11 +281,16 @@ class HabanaAttentionImpl(AttentionImpl):
                 self.scale,
                 self.alibi_slopes,
                 kv_scale
-            )
+            ).reshape(batch_size, -1, hidden_size)
 
         # Reshape the output tensor.
-        return output.view(batch_size, seq_len, hidden_size)
-
+        if prompt_output is not None and decode_output is not None:
+            return torch.concat((prompt_output, decode_output), dim=1)
+        elif prompt_output is not None:
+            return prompt_output
+        else:
+            assert decode_output is not None
+            return decode_output
 
 def _make_alibi_bias(
     alibi_slopes: torch.Tensor,
