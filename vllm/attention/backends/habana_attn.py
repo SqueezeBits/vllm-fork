@@ -223,9 +223,11 @@ class HabanaAttentionImpl(AttentionImpl):
                     # Chunked-prefill
                     # Concat past chunked kv
                     assert batch_size == 1
-                    assert torch.sum(prefill_meta.context_lens_tensor != 0) <= 1
+                    assert torch.sum(prefill_meta.context_lens_tensor != 0) == 1
                     context_len = torch.sum(prefill_meta.context_lens_tensor).item()
                     context_prompt_idx = torch.argmax(prefill_meta.context_lens_tensor)
+                    # This assertion can be removed after a bug with torch.argmax has been fixed (from SynapseAI v1.17)
+                    assert context_prompt_idx == torch.max(prefill_meta.context_lens_tensor, dim=0).indices
                     past_block_num = (context_len - 1) // value_cache.shape[1] + 1
                     past_key = ops.fetch_from_cache(
                         key_cache, 
@@ -241,8 +243,8 @@ class HabanaAttentionImpl(AttentionImpl):
                         self.num_heads,
                         self.num_kv_heads
                     )
-                    prompt_key = torch.cat((past_key.squeeze(0)[:context_len], key))
-                    prompt_value = torch.cat((past_value.squeeze(0)[:context_len], value))
+                    prompt_key = torch.cat((past_key.squeeze(0)[:context_len], prompt_key))
+                    prompt_value = torch.cat((past_value.squeeze(0)[:context_len], prompt_value))
                     kv_shape = (batch_size, num_prefill_tokens + context_len, self.num_kv_heads, self.head_size)
                 out = xops.prompt_attention(
                     prompt_query.view(query_shape),

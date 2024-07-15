@@ -358,9 +358,9 @@ class HabanaModelRunner:
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
     ) -> PreparePromptMetadata:
-        input_tokens: List[List[int]] = []
-        input_positions: List[List[int]] = []
-        slot_mapping: List[List[int]] = []
+        input_tokens: List[List[int]] | torch.Tensor= []
+        input_positions: List[List[int]] | torch.Tensor= []
+        slot_mapping: List[List[int]] | torch.Tensor= []
         lora_index_mapping: List[List[int]] = []
         lora_prompt_mapping: List[List[int]] = []
         lora_requests: Set[LoRARequest] = set()
@@ -390,6 +390,7 @@ class HabanaModelRunner:
                     "now.")
 
             token_chunk_size = seq_group_metadata.token_chunk_size
+            assert token_chunk_size is not None
             seq_data = seq_group_metadata.seq_data[seq_id]
             context_len = seq_data.get_num_computed_tokens()
             # We should use get_len here because in case of preemption
@@ -561,9 +562,9 @@ class HabanaModelRunner:
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
     ) -> PreparePromptMetadata:
-        input_tokens: List[int] = []
-        input_positions: List[int] = []
-        slot_mapping: List[int] = []
+        input_tokens: List[int] | torch.Tensor= []
+        input_positions: List[int] | torch.Tensor= []
+        slot_mapping: List[int] | torch.Tensor= []
         lora_index_mapping: List[int] = []
         lora_prompt_mapping: List[int] = []
         lora_requests: Set[LoRARequest] = set()
@@ -593,6 +594,7 @@ class HabanaModelRunner:
                     "now.")
 
             token_chunk_size = seq_group_metadata.token_chunk_size
+            assert token_chunk_size is not None
             seq_data = seq_group_metadata.seq_data[seq_id]
             context_len = seq_data.get_num_computed_tokens()
             # We should use get_len here because in case of preemption
@@ -812,7 +814,7 @@ class HabanaModelRunner:
                                              self.block_size)
                     block_table = block_table[-sliding_window_blocks:]
                 block_tables.append(block_table)
-            
+        
         # convert inputs to tensor for HPU compatibility
         input_tokens = torch.tensor(input_tokens, dtype=torch.long, device=self.device)
         input_positions = torch.tensor(input_positions, dtype=torch.long, device=self.device)

@@ -112,7 +112,7 @@ class ScheduledSequenceGroup:
 class SchedulerOutputs:
     """The scheduling decision made from a scheduler."""
     # Scheduled sequence groups.
-    scheduled_seq_groups: Iterable[ScheduledSequenceGroup]
+    scheduled_seq_groups: Iterable[SequenceGroup | ScheduledSequenceGroup]
     # Number of prefill groups scheduled.
     num_prefill_groups: int
     # Total number of batched tokens.
@@ -637,7 +637,7 @@ class Scheduler:
             SchedulerSwappedInOutputs.
         """
         ignored_seq_groups: List[SequenceGroup] = []
-        seq_groups: List[SequenceGroup] = []
+        seq_groups: List[SequenceGroup | ScheduledSequenceGroup] = []
         # We don't sort waiting queue because we assume it is sorted.
         # Copy the queue so that the input queue is not modified.
         waiting_queue = deque([s for s in waiting_queue])
