@@ -591,7 +591,6 @@ class SchedulerConfig:
             prompt latency) before scheduling next prompt.
         enable_chunked_prefill: If True, prefill requests can be chunked based
             on the remaining max_num_batched_tokens.
-        enable_1d_query: If True, use 1d query throughout the forward process
         enable_piggybacking: If True, schedule prefill sequences and 
             decode sequences concurrently in a batch.
     """
@@ -605,18 +604,20 @@ class SchedulerConfig:
         num_lookahead_slots: int = 0,
         delay_factor: float = 0.0,
         enable_chunked_prefill: bool = False,
-        enable_1d_query: bool = False,
         enable_piggybacking: bool = False,
     ) -> None:
+        if enable_piggybacking and not enable_chunked_prefill:
+            # This warning can be removed after integrating enable_chunked_prefill and enable_piggybacking flags.
+            logger.warning("Setting enable_chunked_prefill to True to enable piggybacking.")
+            enable_chunked_prefill = True
+
         if max_num_batched_tokens is not None:
             self.max_num_batched_tokens = max_num_batched_tokens
         else:
             if enable_chunked_prefill:
                 # It is the values that have the best balance between ITL
                 # and TTFT on A100. Note it is not optimized for throughput.
-                # The optimal value should be set after implementing chunked-prefill. 
-                # Currently setting it to 2048 to prevent prefill chunking with 1024 fixed inputs.
-                self.max_num_batched_tokens = 2048
+                self.max_num_batched_tokens = 512
             else:
                 # If max_model_len is too short, use 2048 as the default value
                 # for higher throughput.
@@ -630,13 +631,9 @@ class SchedulerConfig:
         self.num_lookahead_slots = num_lookahead_slots
         self.delay_factor = delay_factor
         self.chunked_prefill_enabled = enable_chunked_prefill
-        self.enable_1d_query = enable_1d_query
-        self.enable_piggybacking = enable_piggybacking
-        if self.chunked_prefill_enabled and not self.enable_1d_query:
-            raise NotImplementedError(
-                "chunked-prefill with 2d query is not implemented. "
-                "Enable enable_1d_query to use chunked-prefill."
-            )
+        self.piggybacking_enabled = enable_piggybacking
+        if self.chunked_prefill_enabled and not self.piggybacking_enabled:
+            raise NotImplementedError("prefill-chunking without piggybacking is not implemented yet.")
 
         self._verify_args()
 

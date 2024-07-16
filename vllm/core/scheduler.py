@@ -112,7 +112,7 @@ class ScheduledSequenceGroup:
 class SchedulerOutputs:
     """The scheduling decision made from a scheduler."""
     # Scheduled sequence groups.
-    scheduled_seq_groups: Iterable[ScheduledSequenceGroup]
+    scheduled_seq_groups: Iterable[SequenceGroup | ScheduledSequenceGroup]
     # Number of prefill groups scheduled.
     num_prefill_groups: int
     # Total number of batched tokens.
@@ -637,7 +637,7 @@ class Scheduler:
             SchedulerSwappedInOutputs.
         """
         ignored_seq_groups: List[SequenceGroup] = []
-        seq_groups: List[SequenceGroup] = []
+        seq_groups: List[SequenceGroup | ScheduledSequenceGroup] = []
         # We don't sort waiting queue because we assume it is sorted.
         # Copy the queue so that the input queue is not modified.
         waiting_queue = deque([s for s in waiting_queue])
@@ -908,9 +908,9 @@ class Scheduler:
                 f"decodes: {len(running_scheduled.decode_seq_groups)}, {len(swapped_in.decode_seq_groups)}")
 
         return SchedulerOutputs(
-            scheduled_seq_groups=(prefills.seq_groups +
-                                  running_scheduled.prefill_seq_groups +
+            scheduled_seq_groups=(running_scheduled.prefill_seq_groups +
                                   swapped_in.prefill_seq_groups +
+                                  prefills.seq_groups +
                                   running_scheduled.decode_seq_groups +
                                   swapped_in.decode_seq_groups),
             num_prefill_groups=(len(prefills.seq_groups) +
@@ -929,7 +929,7 @@ class Scheduler:
     def _schedule(self) -> SchedulerOutputs:
         """Schedule queued requests."""
         if self.scheduler_config.chunked_prefill_enabled:
-            return self._schedule_chunked_prefill(self.scheduler_config.enable_piggybacking)
+            return self._schedule_chunked_prefill(self.scheduler_config.piggybacking_enabled)
         else:
             return self._schedule_default()
 

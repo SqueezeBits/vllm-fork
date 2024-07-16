@@ -110,7 +110,6 @@ def run_vllm(
     max_num_batched_tokens: int,
     gpu_memory_utilization: float = 0.9,
     download_dir: Optional[str] = None,
-    enable_1d_query: Optional[bool] = False,
     enable_piggybacking: Optional[bool] = False,
     use_text_input: Optional[bool] = False,
     print_outputs: Optional[bool] = False,
@@ -134,7 +133,6 @@ def run_vllm(
         download_dir=download_dir,
         enable_chunked_prefill=enable_chunked_prefill,
         max_num_batched_tokens=max_num_batched_tokens,
-        enable_1d_query=enable_1d_query,
         enable_piggybacking=enable_piggybacking,
     )
 
@@ -159,7 +157,8 @@ def run_vllm(
     else:
         outputs = llm.generate(prompt_token_ids=prompts, sampling_params=sampling_params, use_tqdm=True)
     if print_outputs:
-        print(f"Outputs: {outputs[0].outputs[0].text}, {outputs[0].outputs[0].token_ids}")
+        for output in outputs:
+            print(f"Outputs: {output.outputs[0].text}, {output.outputs[0].token_ids}")
     end = time.perf_counter()
     elapsed_time = end - start
     return outputs, elapsed_time
@@ -270,7 +269,7 @@ def main(args: argparse.Namespace):
             args.quantization_param_path, args.device,
             args.enable_prefix_caching, args.enable_chunked_prefill,
             args.max_num_batched_tokens, args.gpu_memory_utilization,
-            args.download_dir, args.enable_1d_query, args.enable_piggybacking, 
+            args.download_dir, args.enable_piggybacking, 
             args.use_text_input, args.print_outputs)
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
@@ -393,9 +392,6 @@ if __name__ == "__main__":
     parser.add_argument("--enable-chunked-prefill",
                         action='store_true',
                         help="enable chunked prefill for vLLM backend.")
-    parser.add_argument("--enable-1d-query",
-                        action='store_true',
-                        help="If true, use 1d query instead of 2d query.")
     parser.add_argument("--enable-piggybacking",
                         action='store_true',
                         help="If true, use piggybacking instead of separating prefills and decodes.")

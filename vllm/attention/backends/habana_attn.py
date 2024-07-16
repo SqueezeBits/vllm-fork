@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Tuple, Type
 
 import torch
 import math
+from vllm.hpu import ops
 import vllm.hpu.xops as xops
 from vllm.hpu.attn_bias import (AttentionBias,
                                 LowerTriangularMaskWithTensorBias)
@@ -104,6 +105,9 @@ class HabanaAttentionMetadata(AttentionMetadataPerStage, HabanaPagedAttentionMet
 
     # Maximum sequence length in the batch.
     max_seq_len: Optional[int] = None
+
+    # A tensor of query lengths is the current chunk
+    query_lens_tensor: Optional[torch.Tensor] = None
 
     def __post_init__(self):
         # Set during the execution of the first attention op.
@@ -206,15 +210,42 @@ class HabanaAttentionImpl(AttentionImpl):
         decode_output = None
         if prefill_meta := attn_metadata.prefill_metadata:
             # Prompt run.
-            if True:
             # As HabanaPagedAttention.forward_prefix is not implemented yet,
             # always use xops.prompt_attention.
-            # Original condition: if kv_cache is None or prefill_meta.block_tables.numel() == 0:
-            # TODO(minkyu): refactor this condition branch when prefill chunking is enabled
+            # TODO: restore the original condition after HabanaPagedAttention.forward_prefix has been implemented
+            # if kv_cache is None or prefill_meta.block_tables.numel() == 0:
+            if True:
                 # TODO: move this outside of model
                 assert prefill_meta.attn_bias is not None, 'attn_bias must be set before calling model.forward!'
-                query_shape = (batch_size, num_prefill_tokens, self.num_heads, self.head_size)
-                kv_shape = (batch_size, num_prefill_tokens, self.num_kv_heads, self.head_size)
+                query_shape = (batch_size, -1, self.num_heads, self.head_size)
+                kv_shape = (batch_size, -1, self.num_kv_heads, self.head_size)
+                if torch.sum(prefill_meta.context_lens_tensor) > 0:
+                    # Chunked-prefill
+                    # Concat past chunked kv
+                    assert batch_size == 1
+                    assert torch.sum(prefill_meta.context_lens_tensor != 0) == 1
+                    context_len = torch.sum(prefill_meta.context_lens_tensor).item()
+                    context_prompt_idx = torch.argmax(prefill_meta.context_lens_tensor)
+                    # This assertion can be removed after a bug with torch.argmax has been fixed (from SynapseAI v1.17)
+                    assert context_prompt_idx == torch.max(prefill_meta.context_lens_tensor, dim=0).indices
+                    past_block_num = (context_len - 1) // value_cache.shape[1] + 1
+                    past_key = ops.fetch_from_cache(
+                        key_cache, 
+                        prefill_meta.block_tables[context_prompt_idx, :past_block_num].unsqueeze(0),
+                        num_prefill_tokens,
+                        self.num_heads,
+                        self.num_kv_heads
+                    )
+                    past_value = ops.fetch_from_cache(
+                        value_cache,
+                        prefill_meta.block_tables[context_prompt_idx, :past_block_num].unsqueeze(0),
+                        num_prefill_tokens,
+                        self.num_heads,
+                        self.num_kv_heads
+                    )
+                    prompt_key = torch.cat((past_key.squeeze(0)[:context_len], prompt_key))
+                    prompt_value = torch.cat((past_value.squeeze(0)[:context_len], prompt_value))
+                    kv_shape = (batch_size, num_prefill_tokens + context_len, self.num_kv_heads, self.head_size)
                 out = xops.prompt_attention(
                     prompt_query.view(query_shape),
                     prompt_key.view(kv_shape),
@@ -223,7 +254,7 @@ class HabanaAttentionImpl(AttentionImpl):
                     p=0.0,
                     scale=self.scale,
                 )
-                prompt_output = out.reshape(batch_size, num_prefill_tokens, hidden_size)
+                prompt_output = out.reshape(batch_size, -1, hidden_size)
             else:
                 # prefix-enabled attention
                 output = HabanaPagedAttention.forward_prefix(

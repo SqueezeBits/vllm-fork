@@ -69,7 +69,6 @@ class EngineArgs:
     num_gpu_blocks_override: Optional[int] = None
     num_lookahead_slots: int = 0
     model_loader_extra_config: Optional[dict] = None
-    enable_1d_query: bool = False
     enable_chunked_prefill: bool = False
     enable_piggybacking: bool = False
 
@@ -567,7 +566,6 @@ class EngineArgs:
             delay_factor=self.scheduler_delay_factor,
             enable_chunked_prefill=self.enable_chunked_prefill,
             enable_piggybacking=self.enable_piggybacking,
-            enable_1d_query=self.enable_1d_query,
         )
         lora_config = LoRAConfig(
             max_lora_rank=self.max_lora_rank,
