@@ -1,12 +1,13 @@
 """A layer that compute logits from hidden_stats."""
+import inspect
 from typing import Optional
 
 import torch
 import torch.nn as nn
 
-from vllm.distributed import tensor_model_parallel_gather, tensor_model_parallel_all_gather
+from vllm.distributed import tensor_model_parallel_gather
 from vllm.model_executor.sampling_metadata import SamplingMetadata
-from vllm.utils import is_hpu
+
 
 class LogitsProcessor(nn.Module):
     """Process logits and apply logits processors from sampling metadata.
@@ -20,8 +21,9 @@ class LogitsProcessor(nn.Module):
     def __init__(self,
                  vocab_size: int,
                  org_vocab_size: Optional[int] = None,
-                 scale: Optional[float] = 1.0,
-                 logits_as_input: bool = False) -> None:
+                 scale: float = 1.0,
+                 logits_as_input: bool = False,
+                 soft_cap: Optional[float] = None) -> None:
         """
         Args:
             scale: A scaling factor to apply to the logits.
@@ -33,6 +35,8 @@ class LogitsProcessor(nn.Module):
         self.logits_as_input = logits_as_input
         # original vocabulary size (without LoRA).
         self.org_vocab_size = org_vocab_size or vocab_size
+        # Soft cap the logits. Used in Gemma 2.
+        self.soft_cap = soft_cap
 
     def forward(
         self,
@@ -50,10 +54,14 @@ class LogitsProcessor(nn.Module):
             # Get the logits for the next tokens.
             logits = self._get_logits(hidden_states, embedding, embedding_bias)
 
-        # NOTE(kzawora): allgather on HPU will cause logits to be not None, 
-        # and we need to guard against applying logits processors on non-driver worker
-        if logits is not None and sampling_metadata.seq_groups is not None:
-            logits *= self.scale
+        if logits is not None:
+            if self.soft_cap is not None:
+                logits = logits / self.soft_cap
+                logits = torch.tanh(logits)
+                logits = logits * self.soft_cap
+
+            if self.scale != 1.0:
+                logits *= self.scale
 
             # Apply logits processors (if any).
             logits = _apply_logits_processors(logits, sampling_metadata)
@@ -66,9 +74,7 @@ class LogitsProcessor(nn.Module):
         logits = torch.matmul(hidden_states, embedding.t())
         if embedding_bias is not None:
             logits += embedding_bias
-        # NOTE(kzawora): HPU PT bridge is missing support for single-rank gather. We'll use all-gather on Gaudi for now.
-        gather_op = tensor_model_parallel_all_gather if is_hpu() else tensor_model_parallel_gather
-        logits = gather_op(logits)
+        logits = tensor_model_parallel_gather(logits)
         # Remove paddings in vocab (if any).
         if logits is not None:
             logits = logits[:, :self.org_vocab_size]
@@ -86,8 +92,8 @@ def _prune_hidden_states(
     sampling_metadata: SamplingMetadata,
 ) -> torch.Tensor:
     if sampling_metadata.selected_token_indices is not None:
-        return hidden_states.index_select(0,
-                                          sampling_metadata.selected_token_indices)
+        return hidden_states.index_select(
+            0, sampling_metadata.selected_token_indices)
     else:
         return hidden_states
 
@@ -102,15 +108,25 @@ def _apply_logits_processors(
         seq_ids = seq_group.seq_ids
         sampling_params = seq_group.sampling_params
         logits_processors = sampling_params.logits_processors
-
         if logits_processors:
             found_logits_processors = True
+
             for seq_id, logits_row_idx in zip(seq_ids,
                                               seq_group.sample_indices):
                 logits_row = logits[logits_row_idx]
-                token_ids = seq_group.seq_data[seq_id].output_token_ids
+                past_tokens_ids = seq_group.seq_data[seq_id].output_token_ids
+                prompt_tokens_ids = seq_group.seq_data[seq_id].prompt_token_ids
+
                 for logits_processor in logits_processors:
-                    logits_row = logits_processor(token_ids, logits_row)
+                    parameters = inspect.signature(logits_processor).parameters
+                    if len(parameters) == 3:
+                        logits_row = logits_processor(prompt_tokens_ids,
+                                                      past_tokens_ids,
+                                                      logits_row)
+                    else:
+                        logits_row = logits_processor(past_tokens_ids,
+                                                      logits_row)
+
                 logits[logits_row_idx] = logits_row
 
         logits_processed += len(seq_group.sample_indices) + len(

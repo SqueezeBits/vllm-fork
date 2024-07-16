@@ -100,6 +100,10 @@ The following configurations have been validated to be function with Gaudi devic
 -   [meta-llama/Llama-2-70b-chat-hf](https://huggingface.co/meta-llama/Llama-2-70b-chat-hf)
     with tensor parallelism 8x HPU, BF16 datatype with random
     or greedy sampling
+-   [mistralai/Mistral-7B-Instruct-v0.3](https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3)
+    on single HPU or with tensor parallelism 2x HPU, BF16 datatype with random or greedy sampling
+-   [mistralai/Mixtral-8x7B-Instruct-v0.1](https://huggingface.co/mistralai/Mixtral-8x7B-Instruct-v0.1)
+    with tensor parallelism 2x HPU, BF16 datatype with random or greedy sampling
 
 
 
@@ -128,7 +132,7 @@ If you experience device out-of-memory issues or want to attempt inference at hi
    cache blocks you have available, and therefore reduces the effective
    maximum number of tokens you can handle at a given time.
 
--  If this methon is not efficient, you can disable `HPUGraph` completely. With
+-  If this method is not efficient, you can disable `HPUGraph` completely. With
    HPU Graphs disabled, you are trading latency and throughput at lower
    batches for potentially higher throughput on higher batches. You can do
    that by adding `--enforce-eager` flag to server (for
