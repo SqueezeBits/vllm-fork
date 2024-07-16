@@ -346,6 +346,10 @@ class StatLogger:
                 stats.cpu_cache_usage_sys * 100,
             )
 
+            from habana_frameworks.torch.hpu.metrics import metric_global
+            gc_metric = metric_global("graph_compilation")
+            print(gc_metric.stats(), flush=True)
+
             # Reset tracked stats for next interval.
             self.num_prompt_tokens = []
             self.num_generation_tokens = []

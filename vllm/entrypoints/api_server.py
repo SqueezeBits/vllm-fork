@@ -25,7 +25,6 @@ TIMEOUT_KEEP_ALIVE = 5  # seconds.
 app = FastAPI()
 engine = None
 
-
 @app.get("/health")
 async def health() -> Response:
     """Health check."""
@@ -42,13 +41,14 @@ async def generate(request: Request) -> Response:
     - other fields: the sampling parameters (See `SamplingParams` for details).
     """
     request_dict = await request.json()
-    prompt = request_dict.pop("prompt")
+    prompt = request_dict.pop("prompt", None)
+    prompt_token_ids = request_dict.pop("prompt_token_ids", None)
     stream = request_dict.pop("stream", False)
     sampling_params = SamplingParams(**request_dict)
     request_id = random_uuid()
 
     assert engine is not None
-    results_generator = engine.generate(prompt, sampling_params, request_id)
+    results_generator = engine.generate(None, sampling_params, request_id, prompt_token_ids=prompt_token_ids)
 
     # Streaming case
     async def stream_results() -> AsyncGenerator[bytes, None]:
@@ -73,9 +73,13 @@ async def generate(request: Request) -> Response:
         final_output = request_output
 
     assert final_output is not None
-    prompt = final_output.prompt
-    text_outputs = [prompt + output.text for output in final_output.outputs]
-    ret = {"text": text_outputs}
+    # prompt = final_output.prompt
+    # text_outputs = [prompt + output.text for output in final_output.outputs]
+    # ret = {"text": text_outputs}
+    ret = {
+        "outputs": final_output.outputs[0].token_ids,
+        "TTFT": final_output.metrics.first_token_time - final_output.metrics.arrival_time 
+    }
     return JSONResponse(ret)
 
 
