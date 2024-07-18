@@ -78,7 +78,7 @@ async def generate(request: Request) -> Response:
     # ret = {"text": text_outputs}
     ret = {
         "outputs": final_output.outputs[0].token_ids,
-        "TTFT": final_output.metrics.first_token_time - final_output.metrics.arrival_time 
+        "TTFT": final_output.batched_latency,
     }
     return JSONResponse(ret)
 

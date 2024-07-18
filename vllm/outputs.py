@@ -79,6 +79,7 @@ class RequestOutput:
         prompt_logprobs: Optional[PromptLogprobs],
         outputs: List[CompletionOutput],
         finished: bool,
+        batched_latency: Optional[float] = None,
         metrics: Optional[RequestMetrics] = None,
         lora_request: Optional[LoRARequest] = None,
     ) -> None:
@@ -88,6 +89,7 @@ class RequestOutput:
         self.prompt_logprobs = prompt_logprobs
         self.outputs = outputs
         self.finished = finished
+        self.batched_latency = batched_latency
         self.metrics = metrics
         self.lora_request = lora_request
 

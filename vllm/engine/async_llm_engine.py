@@ -477,13 +477,16 @@ class AsyncLLMEngine:
         if finished_requests:
             await self._engine_abort(finished_requests)
 
+        start_time = time.perf_counter()
         if self.engine_use_ray:
             request_outputs = await self.engine.step.remote()  # type: ignore
         else:
             request_outputs = await self.engine.step_async()
 
+        batched_latency = time.perf_counter() - start_time
         # Put the outputs into the corresponding streams.
         for request_output in request_outputs:
+            request_output.batched_latency = batched_latency
             self._request_tracker.process_request_output(
                 request_output, verbose=self.log_requests)
 
