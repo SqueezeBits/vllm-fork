@@ -403,22 +403,22 @@ class HabanaModelRunner:
             self.model = _maybe_wrap_in_hpu_graph(HpuModelAdapter(self.model, self.block_size))
         self.model_memory_usage = m.consumed_device_memory
         logger.info(f"Loading model weights took in total {m.get_summary_string()}")
-
+        
         if self.lora_config:
-            assert hasattr(self.model, "supported_lora_modules"
-                           ) and self.model.supported_lora_modules, (
+            assert hasattr(self.model.model, "supported_lora_modules"
+                           ) and self.model.model.supported_lora_modules, (
                                "Model does not support LoRA")
             assert hasattr(
-                self.model,
+                self.model.model,
                 "embedding_modules"), "Model does not have embedding_modules"
-            assert hasattr(self.model, "embedding_padding_modules"
+            assert hasattr(self.model.model, "embedding_padding_modules"
                            ), "Model does not have embedding_padding_modules"
             self.lora_manager = LRUCacheWorkerLoRAManager(
                 self.scheduler_config.max_num_seqs,
                 self.scheduler_config.max_num_batched_tokens, self.vocab_size,
-                self.lora_config, self.device, self.model.embedding_modules,
-                self.model.embedding_padding_modules)
-            self.model = self.lora_manager.create_lora_manager(self.model)
+                self.lora_config, self.device, self.model.model.embedding_modules,
+                self.model.model.embedding_padding_modules)
+            self.model.model = self.lora_manager.create_lora_manager(self.model.model)
 
     def _use_graphs(self, batch_size, seq_len, is_prompt):
         if self.enforce_eager:
@@ -935,6 +935,7 @@ class HabanaModelRunner:
             is_prompt = attn_metadata.prefill_metadata is not None
 
         if self.lora_config:
+            #TODO: add 'set_active_loras' in graph mode
             self.set_active_loras(lora_requests, lora_mapping)
 
         batch_size = input_tokens.size(0)
@@ -1103,6 +1104,32 @@ class HabanaModelRunner:
 
         self.warmup_scenario(max_batch_size, max_seq_len, True, kv_caches)
 
+    def remove_all_loras(self):
+        if not self.lora_manager:
+            raise RuntimeError("LoRA is not enabled.")
+        self.lora_manager.remove_all_loras()
+
+    def set_active_loras(self, lora_requests: Set[LoRARequest],
+                         lora_mapping: LoRAMapping) -> None:
+        if not self.lora_manager:
+            raise RuntimeError("LoRA is not enabled.")
+        self.lora_manager.set_active_loras(lora_requests, lora_mapping)
+
+    def add_lora(self, lora_request: LoRARequest) -> bool:
+        if not self.lora_manager:
+            raise RuntimeError("LoRA is not enabled.")
+        return self.lora_manager.add_lora(lora_request)
+
+    def remove_lora(self, lora_id: int) -> bool:
+        if not self.lora_manager:
+            raise RuntimeError("LoRA is not enabled.")
+        return self.lora_manager.remove_lora(lora_id)
+
+    def list_loras(self) -> Set[int]:
+        if not self.lora_manager:
+            raise RuntimeError("LoRA is not enabled.")
+        return self.lora_manager.list_loras()
+    
     def warmup_scenario(self, batch_size, seq_len, is_prompt, kv_caches, profile = False) -> None:
         use_graphs = self._use_graphs(batch_size, seq_len, is_prompt)
         scenario_name = f"warmup_{'prompt' if is_prompt else 'decode'}_bs{batch_size}_seq{seq_len}_graphs{'T' if use_graphs else 'F'}"

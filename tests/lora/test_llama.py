@@ -7,7 +7,8 @@ from vllm.utils import is_hpu
 
 from .conftest import cleanup
 
-MODEL_PATH = "meta-llama/Llama-2-7b-hf"
+# MODEL_PATH = "meta-llama/Llama-2-7b-hf"
+MODEL_PATH = "/scratch-1/models/Llama-2-7b-hf/"
 
 
 def do_sample(llm, lora_path: str, lora_id: int):
@@ -37,7 +38,7 @@ def do_sample(llm, lora_path: str, lora_id: int):
     return generated_texts
 
 
-@pytest.mark.skipif(is_hpu(), reason="Skipping test on HPU")
+# @pytest.mark.skipif(is_hpu(), reason="Skipping test on HPU")
 @pytest.mark.parametrize("tp_size", [1])
 def test_llama_lora(sql_lora_files, tp_size):
     # Cannot use as it will initialize torch.cuda too early...
