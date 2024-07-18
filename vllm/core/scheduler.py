@@ -63,11 +63,11 @@ class SchedulingBudget:
         return (self.num_batched_tokens + num_new_tokens <= self.token_budget
                 and self.num_curr_seqs + num_new_seqs <= self.max_num_seqs)
 
-    def can_schedule_padded_prefill(self, *, num_new_tokens: int, num_new_seqs: int):
+    def can_schedule_padded_prefill(self, *, num_new_tokens: int, num_new_seqs: int, block_size: int):
         assert num_new_tokens != 0
         assert num_new_seqs != 0
         if num_new_tokens > self.max_curr_seqs_len:
-            self._max_curr_seqs_len = (num_new_tokens + 128 - 1) // 128 * 128
+            self._max_curr_seqs_len = (num_new_tokens + block_size - 1) // block_size * block_size
         return ((self.num_new_seqs + num_new_seqs) * self.max_curr_seqs_len <= self.token_budget
                 and self.num_curr_seqs + num_new_seqs <= self.max_num_seqs)
 
@@ -732,7 +732,8 @@ class Scheduler:
             num_new_seqs = seq_group.get_max_num_running_seqs()
             if (num_new_tokens == 0
                     or not budget.can_schedule_padded_prefill(num_new_tokens=num_new_tokens,
-                                                                num_new_seqs=num_new_seqs)):
+                                                                num_new_seqs=num_new_seqs,
+                                                                block_size=self.cache_config.block_size)):
                 break
 
             # Can schedule this request.
