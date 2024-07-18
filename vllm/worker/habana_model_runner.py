@@ -150,7 +150,7 @@ class HpuModelAdapter():
             # TODO(minkyu): benchmark overheads
             prompt_lens_t = prefill_metadata.query_lens_tensor
             context_lens_t = prefill_metadata.context_lens_tensor
-            assert seq_len == torch.sum(prompt_lens_t)
+            assert seq_len == torch.sum(prompt_lens_t) # TODO(minkyu): this code triggers cpu transition
             assert prompt_lens_t.size() == context_lens_t.size()
             assert batch_size == 1
             cur_masks = [torch.tril(torch.ones((size, size), device=device, dtype=torch.bool)) for size in prompt_lens_t]
@@ -1022,6 +1022,14 @@ class HabanaModelRunner:
                 input_tokens = torch.concat((input_tokens, decode_input_tokens), dim=-1)
                 input_positions = torch.concat((input_positions, decode_input_positions), dim=-1)
                 slot_mapping = torch.concat((slot_mapping, decode_slot_mapping), dim=-1)
+                assert input_tokens.shape == input_positions.shape == slot_mapping.shape
+                chunk_size = self.scheduler_config.max_num_batched_tokens
+                if input_tokens.size(1) < chunk_size:
+                    pad_len = chunk_size - input_tokens.size(1)
+                    padding = torch.zeros((1, pad_len), dtype=input_tokens.dtype, device=input_tokens.device)
+                    input_tokens = torch.concat((input_tokens, padding), dim=-1)
+                    input_positions = torch.concat((input_positions, padding), dim=-1)
+                    slot_mapping = torch.concat((slot_mapping, padding), dim=-1)
 
             if self.lora_config:
                 lora_mapping = LoRAMapping(lora_index_mapping, lora_prompt_mapping)
@@ -1156,7 +1164,8 @@ class HabanaModelRunner:
         return subtuple(metadata,
                         'TrimmedMetadata',
                         ['slot_mapping',
-                         'num_prefill_tokens'],
+                         'num_prefill_tokens',
+                         'num_decode_tokens'],
                         {'prefill_metadata': prefill_metadata,
                          'decode_metadata': decode_metadata})
 

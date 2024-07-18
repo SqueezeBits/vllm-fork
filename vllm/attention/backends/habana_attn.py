@@ -188,15 +188,16 @@ class HabanaAttentionImpl(AttentionImpl):
         Returns:
             shape = [num_tokens, num_heads * head_size]
         """
-        batch_size, _, hidden_size = query.shape                
+        batch_size, seq_len, hidden_size = query.shape                
         num_prefill_tokens = attn_metadata.num_prefill_tokens
+        num_decode_tokens = attn_metadata.num_decode_tokens
         
         query = query.view(-1, self.num_heads, self.head_size)
         key = key.view(-1, self.num_kv_heads, self.head_size)
         value = value.view(-1, self.num_kv_heads, self.head_size)
 
         prompt_query = query[:num_prefill_tokens, :, :]
-        decode_query = query[num_prefill_tokens:, :, :]
+        decode_query = query[num_prefill_tokens:num_prefill_tokens + num_decode_tokens, :, :]
         prompt_key = key[:num_prefill_tokens, :, :]
         prompt_value = value[:num_prefill_tokens, :, :]
                 
@@ -296,12 +297,16 @@ class HabanaAttentionImpl(AttentionImpl):
 
         # Reshape the output tensor.
         if prompt_output is not None and decode_output is not None:
-            return torch.concat((prompt_output, decode_output), dim=1)
+            output = torch.concat((prompt_output, decode_output), dim=1)
         elif prompt_output is not None:
-            return prompt_output
+            output = prompt_output
         else:
             assert decode_output is not None
-            return decode_output
+            output = decode_output
+        if output.size(1) != seq_len:
+            pad_len = seq_len - output.size(1)
+            output = torch.nn.functional.pad(output, (0, 0, 0, pad_len), value=0)
+        return output
 
 def _make_alibi_bias(
     alibi_slopes: torch.Tensor,
