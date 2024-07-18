@@ -117,6 +117,7 @@ def run_vllm(
     enable_piggybacking: Optional[bool] = False,
     use_text_input: Optional[bool] = False,
     print_outputs: Optional[bool] = False,
+    enable_1d_prefill: Optional[bool] = False,
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -140,6 +141,7 @@ def run_vllm(
         distributed_executor_backend=distributed_executor_backend,
         load_format=load_format,
         enable_piggybacking=enable_piggybacking,
+        enable_1d_prefill=enable_1d_prefill,
     )
 
     # Add the requests to the engine.
@@ -276,7 +278,7 @@ def main(args: argparse.Namespace):
             args.enable_prefix_caching, args.enable_chunked_prefill,
             args.max_num_batched_tokens, args.distributed_executor_backend,
             args.gpu_memory_utilization, args.download_dir, args.load_format, args.enable_piggybacking, 
-            args.use_text_input, args.print_outputs)
+            args.use_text_input, args.print_outputs, args.enable_1d_prefill)
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
         elapsed_time = run_hf(requests, args.model, tokenizer, args.n,
@@ -408,6 +410,9 @@ if __name__ == "__main__":
         "--enable-prefix-caching",
         action='store_true',
         help="enable automatic prefix caching for vLLM backend.")
+    parser.add_argument("--enable-1d-prefill",
+                        action='store_true',
+                        help="use 1d query throughout the prefill phase.")
     parser.add_argument("--enable-chunked-prefill",
                         action='store_true',
                         help="enable chunked prefill for vLLM backend.")

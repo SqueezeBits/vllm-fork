@@ -126,11 +126,11 @@ class HpuModelAdapter():
         self.model = model
 
     def _set_attn_bias(self, attn_metadata, batch_size, seq_len, device,
-                       dtype, chunked_prefill_enabled = False):
+                       dtype, enable_1d_prefill = False):
         prefill_metadata = attn_metadata.prefill_metadata
         if prefill_metadata is None:
             return attn_metadata
-        if not chunked_prefill_enabled:
+        if not enable_1d_prefill:
             seq_len = seq_len // batch_size
             seq_lens_t = prefill_metadata.seq_lens_tensor
             len_mask = (torch.arange(0, seq_len, device=device,
@@ -171,7 +171,7 @@ class HpuModelAdapter():
         if 'bypass_hpu_graphs' in kwargs:
             kwargs.pop('bypass_hpu_graphs')  # required for PT eager
 
-        chunked_prefill_enabled = kwargs.pop("chunked_prefill_enabled", False)
+        enable_1d_prefill = kwargs.pop("enable_1d_prefill", False)
         input_ids = kwargs['input_ids']
         
         attn_metadata = kwargs['attn_metadata']
@@ -181,7 +181,7 @@ class HpuModelAdapter():
             attn_metadata.num_prefill_tokens,
             input_ids.device,
             torch.bfloat16,
-            chunked_prefill_enabled=chunked_prefill_enabled,
+            enable_1d_prefill=enable_1d_prefill,
         )
         hidden_states = self.model(*args, **kwargs)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
@@ -943,6 +943,7 @@ class HabanaModelRunner:
     ) -> Tuple[torch.Tensor, torch.Tensor, AttentionMetadata, SamplingMetadata,
                Set[LoRARequest], LoRAMapping, torch.Tensor]:
         
+        enable_1d_prefill = self.scheduler_config.enable_1d_prefill
         chunked_prefill_enabled = self.scheduler_config.chunked_prefill_enabled
         
         if self.is_driver_worker:
@@ -966,7 +967,7 @@ class HabanaModelRunner:
                 lora_requests,
                 multi_modal_input,
                 slot_mapping,
-            ) = self._prepare_prompt(prefill_reqs) if not chunked_prefill_enabled else self._prepare_prompt_1d(prefill_reqs)
+            ) = self._prepare_prompt(prefill_reqs) if not enable_1d_prefill else self._prepare_prompt_1d(prefill_reqs)
             (
                 decode_input_tokens,
                 decode_input_positions,
@@ -975,7 +976,7 @@ class HabanaModelRunner:
                 decode_lora_prompt_mapping,
                 decode_lora_requests,
                 decode_slot_mapping,
-            ) = self._prepare_decode(decode_reqs, chunked_prefill_enabled)                       
+            ) = self._prepare_decode(decode_reqs, chunked_prefill_enabled)
                         
             sampling_metadata = SamplingMetadata.prepare(
                 seq_group_metadata_list, seq_lens, query_lens, self.device,
@@ -1004,17 +1005,18 @@ class HabanaModelRunner:
                     lora_prompt_mapping = decode_lora_prompt_mapping
                     lora_requests = decode_lora_requests
 
-                # FIXME: We need to adjust selected_token_indices to accommodate
-                # for padding
-                max_len = input_tokens.size(1)
-                paddings = [max_len - s for s in seq_lens]
-                paddings = [0] + paddings[:-1]
-                paddings = list(itertools.accumulate(paddings))
-                paddings = torch.tensor(
-                    paddings,
-                    dtype=sampling_metadata.selected_token_indices.dtype,
-                    device=sampling_metadata.selected_token_indices.device)
-                sampling_metadata.selected_token_indices.add_(paddings)
+                if not enable_1d_prefill:
+                    # FIXME: We need to adjust selected_token_indices to accommodate
+                    # for padding
+                    max_len = input_tokens.size(1)
+                    paddings = [max_len - s for s in seq_lens]
+                    paddings = [0] + paddings[:-1]
+                    paddings = list(itertools.accumulate(paddings))
+                    paddings = torch.tensor(
+                        paddings,
+                        dtype=sampling_metadata.selected_token_indices.dtype,
+                        device=sampling_metadata.selected_token_indices.device)
+                    sampling_metadata.selected_token_indices.add_(paddings)
             else:
                 # TODO(huijong): restore lora functionality
                 input_tokens = torch.concat((input_tokens, decode_input_tokens), dim=-1)
@@ -1172,7 +1174,7 @@ class HabanaModelRunner:
             self.profiler.start('internal', base_event_name)
 
             real_batch_size = len(seq_group_metadata_list)
-            if not self.scheduler_config.chunked_prefill_enabled:
+            if not self.scheduler_config.enable_1d_prefill:
                 # TODO(minkyu): configure buckets for 1d query
                 bucket_cfg = self.prompt_bs_bucket_cfg if is_prompt else \
                 self.decode_bs_bucket_cfg
@@ -1227,7 +1229,7 @@ class HabanaModelRunner:
                 selected_token_indices,
                
                 bypass_hpu_graphs=not use_graphs,
-                chunked_prefill_enabled=self.scheduler_config.chunked_prefill_enabled,
+                enable_1d_prefill=self.scheduler_config.enable_1d_prefill,
             )
 
         # Compute the logits.
@@ -1256,7 +1258,7 @@ class HabanaModelRunner:
                 sampling_metadata=sampling_metadata,
             )
 
-        if not self.scheduler_config.chunked_prefill_enabled:
+        if not self.scheduler_config.enable_1d_prefill:
             output.outputs = output.outputs[:real_batch_size]
         htorch.core.mark_step()
 

@@ -706,6 +706,7 @@ class SchedulerConfig:
             accepted.
         delay_factor: Apply a delay (of delay factor multiplied by previous
             prompt latency) before scheduling next prompt.
+        enable_1d_prefill: If True, use 1d query throughout the prefill phase.
         enable_chunked_prefill: If True, prefill requests can be chunked based
             on the remaining max_num_batched_tokens.
         enable_piggybacking: If True, schedule prefill sequences and 
@@ -726,13 +727,17 @@ class SchedulerConfig:
                  use_v2_block_manager: bool = False,
                  num_lookahead_slots: int = 0,
                  delay_factor: float = 0.0,
+                 enable_1d_prefill: bool = False,
                  enable_chunked_prefill: bool = False,
                  enable_piggybacking: bool = False,
                  embedding_mode: Optional[bool] = False,
                  preemption_mode: Optional[str] = None) -> None:
+        if enable_chunked_prefill and not enable_1d_prefill:
+            enable_1d_prefill = True
         if enable_piggybacking and not enable_chunked_prefill:
             # This warning can be removed after integrating enable_chunked_prefill and enable_piggybacking flags.
             logger.warning("Setting enable_chunked_prefill to True to enable piggybacking.")
+            enable_1d_prefill = True
             enable_chunked_prefill = True
 
         if max_num_batched_tokens is not None:
@@ -758,6 +763,7 @@ class SchedulerConfig:
         self.use_v2_block_manager = use_v2_block_manager
         self.num_lookahead_slots = num_lookahead_slots
         self.delay_factor = delay_factor
+        self.enable_1d_prefill = enable_1d_prefill
         self.chunked_prefill_enabled = enable_chunked_prefill
         self.embedding_mode = embedding_mode
         self.preemption_mode = preemption_mode
