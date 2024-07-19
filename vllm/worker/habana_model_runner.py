@@ -1398,7 +1398,7 @@ class HabanaModelRunner:
     @torch.inference_mode()
     def warmup_model(self, kv_caches: List[torch.Tensor]) -> None:
         # fix(huijong): just skip warmup for now
-        if self.scheduler_config.chunked_prefill_enabled or os.environ.get('VLLM_SKIP_WARMUP', 'false').lower() == 'true':
+        if self.scheduler_config.enable_1d_prefill or os.environ.get('VLLM_SKIP_WARMUP', 'false').lower() == 'true':
             logger.info("Skipping warmup...")
             return
         self.profiler.start('internal', 'warmup')
