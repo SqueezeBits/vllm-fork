@@ -116,11 +116,7 @@ class HabanaWorker(WorkerBase):
         .. tip::
             You may limit the usage of GPU memory
             by adjusting the `gpu_memory_utilization` parameter.
-        """
-        if self.scheduler_config.chunked_prefill_enabled:
-            # TODO(huijong): restore original functionality
-            return 2579, 256
-     
+        """     
         # Profile the memory usage of the model and get the maximum number of
         # cache blocks that can be allocated with the remaining free memory.
 
@@ -136,7 +132,7 @@ class HabanaWorker(WorkerBase):
         cache_block_size = self.get_cache_block_size_bytes()
         graph_headroom = 1 - (float(
             os.environ.get('VLLM_GRAPH_RESERVED_MEM', '0.4'))
-                              if not self.model_config.enforce_eager else 0)
+                              if not self.model_config.enforce_eager and not self.scheduler_config.chunked_prefill_enabled else 0)
         num_hpu_blocks = int(free_hpu_memory * graph_headroom *
                              self.cache_config.gpu_memory_utilization //
                              cache_block_size)
