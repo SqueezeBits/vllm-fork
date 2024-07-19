@@ -1034,7 +1034,7 @@ class HabanaModelRunner:
         num_layers = self.model_config.get_num_layers(self.parallel_config)
         kv_caches = [None] * num_layers
         max_batch_size = self.prompt_bs_bucket_cfg[-1]
-        max_seq_len = self.prompt_seq_bucket_cfg[-1]
+        max_seq_len = self.block_size
 
         self.warmup_scenario(max_batch_size, max_seq_len, True, kv_caches)
 
