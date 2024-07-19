@@ -132,7 +132,7 @@ class HabanaWorker(WorkerBase):
         cache_block_size = self.get_cache_block_size_bytes()
         graph_headroom = 1 - (float(
             os.environ.get('VLLM_GRAPH_RESERVED_MEM', '0.4'))
-                              if not self.model_config.enforce_eager else 0)
+                              if not self.model_config.enforce_eager and not self.scheduler_config.chunked_prefill_enabled else 0)
         num_hpu_blocks = int(free_hpu_memory * graph_headroom *
                              self.cache_config.gpu_memory_utilization //
                              cache_block_size)
