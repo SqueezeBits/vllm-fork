@@ -51,6 +51,9 @@ def paged_attention_v1(query,
     batch_size, query_heads, _ = query.shape
     _, _, kv_heads, _ = key_cache.shape
     min_inf = torch.finfo(query.dtype).min
+    pad_len = batch_size - context_lens.size(0)
+    context_lens = torch.nn.functional.pad(context_lens, (0, pad_len), value=block_size * seq_len)
+
     mask = (torch.arange(0,
                          seq_len * block_size,
                          dtype=torch.int32,
@@ -64,6 +67,11 @@ def paged_attention_v1(query,
         query = query.unflatten(1, (kv_heads, -1))
         keys = [k.unflatten(1, (kv_heads, 1)) for k in keys]
         mask = mask.unsqueeze(2)
+    
+    if pad_len > 0:
+        # TODO(minkyu): remove if
+        padded_shape = (pad_len, *keys[0].shape[1:])
+        keys = [torch.concat((k, torch.zeros(padded_shape, device=query.device, dtype=query.dtype)), dim=0) for k in keys]
 
     attn_weights = [torch.matmul(query, k) for k in keys]
     attn_weights = torch.cat(attn_weights, dim=-1)
@@ -80,6 +88,12 @@ def paged_attention_v1(query,
         attn_weights = [attn_weights]
     if query_heads != kv_heads:
         values = [v.unflatten(1, (kv_heads, 1)) for v in values]
+    
+    if pad_len > 0:
+        # TODO(minkyu): remove if
+        padded_shape = (pad_len, *values[0].shape[1:])
+        values = [torch.concat((v, torch.zeros(padded_shape, device=query.device, dtype=query.dtype)), dim=0) for v in values]
+
     attn_weights = [torch.matmul(a, v) for a, v in zip(attn_weights, values)]
     if query_heads != kv_heads:
         attn_weights = [a.flatten(1, 2) for a in attn_weights]

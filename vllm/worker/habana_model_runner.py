@@ -125,13 +125,12 @@ class HpuModelAdapter():
     def __init__(self, model):
         self.model = model
 
-    def _set_attn_bias(self, attn_metadata, batch_size, seq_len, device,
+    def _set_attn_bias(self, attn_metadata, batch_size, seq_len, prefill_len, device,
                        dtype, enable_1d_prefill = False):
         prefill_metadata = attn_metadata.prefill_metadata
         if prefill_metadata is None:
             return attn_metadata
         if not enable_1d_prefill:
-            seq_len = seq_len // batch_size
             seq_lens_t = prefill_metadata.seq_lens_tensor
             len_mask = (torch.arange(0, seq_len, device=device,
                                     dtype=torch.int32).view(1, seq_len).ge(
@@ -150,12 +149,21 @@ class HpuModelAdapter():
             # TODO(minkyu): benchmark overheads
             prompt_lens_t = prefill_metadata.query_lens_tensor
             context_lens_t = prefill_metadata.context_lens_tensor
-            assert seq_len == torch.sum(prompt_lens_t) # TODO(minkyu): this code triggers cpu transition
             assert prompt_lens_t.size() == context_lens_t.size()
             assert batch_size == 1
             cur_masks = [torch.tril(torch.ones((size, size), device=device, dtype=torch.bool)) for size in prompt_lens_t]
-            past_masks = [torch.ones((q_len, past_kv_len), device=device, dtype=torch.bool) for q_len, past_kv_len in zip(prompt_lens_t, context_lens_t)]
+            past_masks = [torch.ones((q_len, past_kv_len), device=device, dtype=torch.bool)
+                           for q_len, past_kv_len in zip(prompt_lens_t, context_lens_t)]
+            pad_len = round_up(context_lens_t[0], seq_len) - context_lens_t[0]
+            if pad_len > 0:
+                past_masks[0] = torch.cat((torch.zeros((prompt_lens_t[0], pad_len), device=device, dtype=torch.bool), past_masks[0]), dim=1)
             masks_per_prompt = [torch.cat((past, cur), dim=1) for past, cur in zip(past_masks, cur_masks)]
+
+            # For chunked-prefill, pad mask upto chunk size(=seq_len)
+            pad_len = seq_len - prefill_len
+            if pad_len > 0:
+                masks_per_prompt.append(torch.zeros((pad_len, pad_len), device=device, dtype=torch.bool))
+
             mask = torch.block_diag(*masks_per_prompt)
             attn_bias = (torch.zeros_like(mask, dtype=dtype)
                             .masked_fill_(mask==0, torch.finfo(dtype).min)
@@ -178,6 +186,7 @@ class HpuModelAdapter():
         kwargs['attn_metadata'] = self._set_attn_bias(
             attn_metadata,
             input_ids.size(0),
+            input_ids.size(1),
             attn_metadata.num_prefill_tokens,
             input_ids.device,
             torch.bfloat16,

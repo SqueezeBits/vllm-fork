@@ -191,6 +191,8 @@ class HabanaAttentionImpl(AttentionImpl):
         batch_size, seq_len, hidden_size = query.shape                
         num_prefill_tokens = attn_metadata.num_prefill_tokens
         num_decode_tokens = attn_metadata.num_decode_tokens
+        prompt_output = torch.empty_like(query)
+        decode_output = torch.empty_like(query)
         
         query = query.view(-1, self.num_heads, self.head_size)
         key = key.view(-1, self.num_kv_heads, self.head_size)
@@ -211,8 +213,6 @@ class HabanaAttentionImpl(AttentionImpl):
                 key, value, key_cache, value_cache, attn_metadata.slot_mapping,
                 self.kv_cache_dtype, attn_metadata.decode_metadata is None)
 
-        prompt_output = None
-        decode_output = None
         if prefill_meta := attn_metadata.prefill_metadata:
             # Prompt run.
             # As HabanaPagedAttention.forward_prefix is not implemented yet,
@@ -229,6 +229,12 @@ class HabanaAttentionImpl(AttentionImpl):
                     attn_bias.add_(self.position_bias[:, :,
                                                       -attn_bias.size(2):,
                                                       -attn_bias.size(3):])
+
+                # make prefill attention shape static
+                prefill_pad_len = seq_len * batch_size - num_prefill_tokens
+                prompt_query = torch.nn.functional.pad(prompt_query, (0, 0, 0, 0, 0, prefill_pad_len), value=0)
+                prompt_key = torch.nn.functional.pad(prompt_key, (0, 0, 0, 0, 0, prefill_pad_len), value=0)
+                prompt_value = torch.nn.functional.pad(prompt_value, (0, 0, 0, 0, 0, prefill_pad_len), value=0)
 
                 query_shape = (batch_size, -1, self.num_heads, self.head_size)
                 kv_shape = (batch_size, -1, self.num_kv_heads, self.head_size)
@@ -255,7 +261,9 @@ class HabanaAttentionImpl(AttentionImpl):
                     )
                     prompt_key = torch.cat((past_key.squeeze(0)[:context_len], prompt_key))
                     prompt_value = torch.cat((past_value.squeeze(0)[:context_len], prompt_value))
-                    kv_shape = (batch_size, num_prefill_tokens + context_len, self.num_kv_heads, self.head_size)
+                    prompt_key = pad_to_bucket(prompt_key, seq_len)
+                    prompt_value = pad_to_bucket(prompt_value, seq_len)
+                    kv_shape = (batch_size, -1, self.num_kv_heads, self.head_size)
                 out = ops.prompt_attention(
                     prompt_query.view(query_shape),
                     prompt_key.view(kv_shape),
@@ -282,6 +290,12 @@ class HabanaAttentionImpl(AttentionImpl):
                 )
         if decode_meta := attn_metadata.decode_metadata:
             # Decoding run.
+
+            # make decode attention shape static.
+            # context_lens and kv will be padded too.
+            decode_pad_len = seq_len * batch_size - num_decode_tokens
+            decode_query = torch.nn.functional.pad(decode_query, (0, 0, 0, 0, 0, decode_pad_len), value=0)
+
             decode_output = HabanaPagedAttention.forward_decode(
                 decode_query,
                 key_cache,
@@ -296,16 +310,10 @@ class HabanaAttentionImpl(AttentionImpl):
             ).reshape(batch_size, -1, hidden_size)
 
         # Reshape the output tensor.
-        if prompt_output is not None and decode_output is not None:
-            output = torch.concat((prompt_output, decode_output), dim=1)
-        elif prompt_output is not None:
-            output = prompt_output
-        else:
-            assert decode_output is not None
-            output = decode_output
-        if output.size(1) != seq_len:
-            pad_len = seq_len - output.size(1)
-            output = torch.nn.functional.pad(output, (0, 0, 0, pad_len), value=0)
+        output = torch.concat((prompt_output[:, :num_prefill_tokens, :], decode_output[:, :num_decode_tokens, :]), dim=1)
+        pad_len = seq_len - output.size(1)
+        output = torch.nn.functional.pad(output, (0, 0, 0, pad_len), value=0)
+        assert output.size(1) == seq_len
         return output
 
 def _make_alibi_bias(
@@ -338,3 +346,7 @@ def _make_alibi_bias(
     if num_heads != num_kv_heads:
         bias = bias.unflatten(1, (num_kv_heads, num_heads // num_kv_heads))
     return bias
+
+def pad_to_bucket(target: torch.Tensor, bucket_size: int) -> torch.Tensor:
+    seq_bucket_len = ((target.size(0) + bucket_size - 1) // bucket_size) * bucket_size
+    return torch.nn.functional.pad(target, (0, 0, 0, 0, seq_bucket_len - target.size(0), 0), value=0)
