@@ -1307,7 +1307,16 @@ class HabanaModelRunner:
         max_batch_size = self.prompt_bs_bucket_cfg[-1]
         max_seq_len = self.prompt_seq_bucket_cfg[-1]
 
+        # Disable chunked prefill to capture maximum workspace
+        enable_1d_prefill = self.scheduler_config.enable_1d_prefill
+        chunked_prefill_enabled = self.scheduler_config.chunked_prefill_enabled
+        self.scheduler_config.enable_1d_prefill = False
+        self.scheduler_config.chunked_prefill_enabled = False
+
         self.warmup_scenario(max_batch_size, max_seq_len, True, kv_caches)
+
+        self.scheduler_config.enable_1d_prefill = enable_1d_prefill
+        self.scheduler_config.chunked_prefill_enabled = chunked_prefill_enabled
 
     def warmup_scenario(self, batch_size, seq_len, is_prompt,
                         kv_caches) -> None:
