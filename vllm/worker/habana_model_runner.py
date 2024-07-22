@@ -187,11 +187,15 @@ class HpuModelAdapter():
             attn_metadata,
             input_ids.size(0),
             input_ids.size(1),
-            attn_metadata.num_prefill_tokens,
+            attn_metadata.num_prefill_tokens.item(),
             input_ids.device,
             torch.bfloat16,
             enable_1d_prefill=enable_1d_prefill,
         )
+        if enable_1d_prefill:
+            kwargs['attn_metadata'] = self.trim_attn_metadata_before_forward(kwargs['attn_metadata'])
+            kwargs['attn_metadata'] = self.prepare_metadata(kwargs['attn_metadata'], chunk_size=input_ids.size(1))
+
         hidden_states = self.model(*args, **kwargs)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
         hidden_states = hidden_states.index_select(0, selected_token_indices)
@@ -202,6 +206,68 @@ class HpuModelAdapter():
 
     def sample(self, *args, **kwargs):
         return self.model.sample(*args, **kwargs)
+    
+    def trim_attn_metadata_before_forward(self, metadata: AttentionMetadata):
+        # Some attributes are only used while setting attn_bias and not inside the model forward.
+        # To remove dynamicity in the metadata,
+        # trim the unused attributes before passing into the model.
+        prefill_metadata = subtuple(metadata.prefill_metadata,
+                                    'TrimmedPrefillModelMetadata',
+                                    ['block_tables',
+                                     'block_num',
+                                     'attn_bias',
+                                     'context_lens_tensor'])
+        decode_metadata = subtuple(metadata.decode_metadata,
+                                   'TrimmedDecodeModelMetadata',
+                                   ['block_tables',
+                                    'block_num',
+                                    'seq_lens_tensor',
+                                    ])
+        return subtuple(metadata,
+                        'TrimmedMetadata',
+                        ['slot_mapping',
+                         'num_prefill_tokens',
+                         'num_decode_tokens'],
+                        {'prefill_metadata': prefill_metadata,
+                         'decode_metadata': decode_metadata})
+
+    def prepare_metadata(self, metadata: AttentionMetadata, chunk_size: int):
+        def pad_block_table(block_table):
+            pad_len = self.get_max_block_num() - block_table.size(0)
+            padded_block_tables = torch.nn.functional.pad(block_table, (0, 0, 0, pad_len), value=0)
+            return padded_block_tables
+
+        if metadata.prefill_metadata is not None:
+            prefill_metadata = metadata.prefill_metadata
+
+            # As only the first sequence in a prefill batch can have the previous chunk,
+            # which means the below assertions should pass,
+            # only pass the first element to the model to remove dynamicity in the metadata.
+            assert torch.sum(prefill_metadata.context_lens_tensor != 0) <= 1, prefill_metadata.context_lens_tensor
+            assert torch.argmax(prefill_metadata.context_lens_tensor) == 0
+            prefill_metadata = prefill_metadata._replace(context_lens_tensor=prefill_metadata.context_lens_tensor[:1])
+
+            # pad block table
+            prefill_metadata = prefill_metadata._replace(block_tables=pad_block_table(prefill_metadata.block_tables))
+
+            metadata = metadata._replace(prefill_metadata=prefill_metadata)
+        if metadata.decode_metadata is not None:
+            # seq_lens_tensor in decode_metadata is being used to create a mask for pagedattention.
+            decode_metadata = metadata.decode_metadata
+            seq_lens_tensor = decode_metadata.seq_lens_tensor
+            pad_len = chunk_size - seq_lens_tensor.size(0)
+            padded = torch.nn.functional.pad(seq_lens_tensor, (0, pad_len), value=torch.iinfo(seq_lens_tensor.dtype).max)
+            decode_metadata = decode_metadata._replace(seq_lens_tensor=padded)
+
+            # pad block table
+            decode_metadata = decode_metadata._replace(block_tables=pad_block_table(decode_metadata.block_tables))
+
+            metadata = metadata._replace(decode_metadata=decode_metadata)
+        return metadata
+    
+    def get_max_block_num(self, max_model_len=2048, block_size=128):
+        # TODO(minkyu): parse max_model_len and block_size properly
+        return (max_model_len - 1) // block_size + 1
 
 
 class PreparePromptMetadata(NamedTuple):
@@ -612,6 +678,7 @@ class HabanaModelRunner:
             seq_start_loc=seq_start_loc,
             context_lens_tensor=context_lens_tensor,
             block_tables=block_tables,
+            block_num=torch.tensor(block_tables.shape[0], device=block_tables.device, dtype=block_tables.dtype),
             use_cuda_graph=False,
             num_prefills=real_num_seqs,
             num_prefill_tokens=sum_query_len,
@@ -816,6 +883,7 @@ class HabanaModelRunner:
             seq_start_loc=seq_start_loc,
             context_lens_tensor=context_lens_tensor,
             block_tables=block_tables,
+            block_num=torch.tensor(block_tables.shape[0], device=block_tables.device, dtype=block_tables.dtype),
             use_cuda_graph=False,
             query_lens_tensor=query_lens_tensor,
             num_prefills=real_num_seqs,
@@ -930,6 +998,7 @@ class HabanaModelRunner:
             seq_start_loc=None,
             context_lens_tensor=None,
             block_tables=block_tables,
+            block_num=torch.tensor(block_tables.shape[0], device=block_tables.device, dtype=block_tables.dtype),
             use_cuda_graph=False,
             num_prefills=0,
             num_prefill_tokens=0,
@@ -1121,8 +1190,8 @@ class HabanaModelRunner:
         attn_metadata = AttentionMetadata(
             num_prefills=num_prefills,
             slot_mapping=slot_mapping,
-            num_prefill_tokens=num_prefill_tokens,
-            num_decode_tokens=num_decode_tokens,
+            num_prefill_tokens=torch.tensor(num_prefill_tokens, device=input_tokens.device),
+            num_decode_tokens=torch.tensor(num_decode_tokens, device=input_tokens.device),
             prefill_metadata=prefill_attn_metadata,
             decode_metadata=decode_attn_metadata,
         )
@@ -1161,6 +1230,7 @@ class HabanaModelRunner:
         prefill_metadata = subtuple(metadata.prefill_metadata,
                                     'TrimmedPrefillMetadata',
                                     ['block_tables',
+                                     'block_num',
                                      'seq_lens_tensor',
                                      'attn_bias',
                                      'query_lens_tensor',
@@ -1168,6 +1238,7 @@ class HabanaModelRunner:
         decode_metadata = subtuple(metadata.decode_metadata,
                                    'TrimmedDecodeMetadata',
                                    ['block_tables',
+                                    'block_num',
                                     'seq_lens_tensor',
                                     ])
         return subtuple(metadata,

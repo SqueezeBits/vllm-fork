@@ -62,12 +62,12 @@ class AttentionMetadataPerStage:
     # Not that this class is required for chunked-prefill
     
     # Total number of prefill requests.
-    num_prefills: int
+    num_prefills: torch.Tensor
     # Number of prefill tokens.
-    num_prefill_tokens: int
+    num_prefill_tokens: torch.Tensor
     # Number of decode tokens. Note that it is equivalent to the number of
     # decode requests.
-    num_decode_tokens: int
+    num_decode_tokens: torch.Tensor
 
     def asdict_zerocopy(self,
                         skip_fields: Optional[Set[str]] = None

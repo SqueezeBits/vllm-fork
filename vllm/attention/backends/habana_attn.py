@@ -243,7 +243,7 @@ class HabanaAttentionImpl(AttentionImpl):
                     # Concat past chunked kv
                     assert batch_size == 1
                     assert torch.sum(prefill_meta.context_lens_tensor != 0) == 1
-                    context_len = torch.sum(prefill_meta.context_lens_tensor).item()
+                    context_len = torch.sum(prefill_meta.context_lens_tensor)
                     context_prompt_idx = torch.argmax(prefill_meta.context_lens_tensor)
                     # This assertion can be removed after a bug with torch.argmax has been fixed (from SynapseAI v1.17)
                     assert context_prompt_idx == torch.max(prefill_meta.context_lens_tensor, dim=0).indices
@@ -306,7 +306,8 @@ class HabanaAttentionImpl(AttentionImpl):
                 self.num_kv_heads,
                 self.scale,
                 self.alibi_slopes,
-                kv_scale
+                kv_scale,
+                decode_meta.block_num,
             ).reshape(batch_size, -1, hidden_size)
 
         # Reshape the output tensor.

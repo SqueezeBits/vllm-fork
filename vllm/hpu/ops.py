@@ -46,13 +46,14 @@ def paged_attention_v1(query,
                        context_lens,
                        block_size,
                        alibi_slopes=None,
-                       kv_cache_dtype=None) -> None:
+                       kv_cache_dtype=None,
+                       block_num=None) -> None:
+    if block_num is not None:
+        block_tables = block_tables[:block_num, ...]
     seq_len = block_tables.size(1)
     batch_size, query_heads, _ = query.shape
     _, _, kv_heads, _ = key_cache.shape
     min_inf = torch.finfo(query.dtype).min
-    pad_len = batch_size - context_lens.size(0)
-    context_lens = torch.nn.functional.pad(context_lens, (0, pad_len), value=block_size * seq_len)
 
     mask = (torch.arange(0,
                          seq_len * block_size,
@@ -68,6 +69,7 @@ def paged_attention_v1(query,
         keys = [k.unflatten(1, (kv_heads, 1)) for k in keys]
         mask = mask.unsqueeze(2)
     
+    pad_len = batch_size - keys[0].size(0)
     if pad_len > 0:
         # TODO(minkyu): remove if
         padded_shape = (pad_len, *keys[0].shape[1:])
