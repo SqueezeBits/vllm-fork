@@ -233,8 +233,8 @@ class HpuModelAdapter():
 
     def prepare_metadata(self, metadata: AttentionMetadata, chunk_size: int):
         def pad_block_table(block_table):
-            pad_len = self.get_max_block_num() - block_table.size(0)
-            padded_block_tables = torch.nn.functional.pad(block_table, (0, 0, 0, pad_len), value=0)
+            pad_len = self.get_max_block_num() - block_table.size(1)
+            padded_block_tables = torch.nn.functional.pad(block_table, (0, pad_len, 0, 0), value=0)
             return padded_block_tables
 
         if metadata.prefill_metadata is not None:
@@ -678,7 +678,7 @@ class HabanaModelRunner:
             seq_start_loc=seq_start_loc,
             context_lens_tensor=context_lens_tensor,
             block_tables=block_tables,
-            block_num=torch.tensor(block_tables.shape[0], device=block_tables.device, dtype=block_tables.dtype),
+            block_num=torch.tensor(block_tables.shape[1], device=block_tables.device, dtype=block_tables.dtype),
             use_cuda_graph=False,
             num_prefills=real_num_seqs,
             num_prefill_tokens=sum_query_len,
@@ -883,7 +883,7 @@ class HabanaModelRunner:
             seq_start_loc=seq_start_loc,
             context_lens_tensor=context_lens_tensor,
             block_tables=block_tables,
-            block_num=torch.tensor(block_tables.shape[0], device=block_tables.device, dtype=block_tables.dtype),
+            block_num=torch.tensor(block_tables.shape[1], device=block_tables.device, dtype=block_tables.dtype),
             use_cuda_graph=False,
             query_lens_tensor=query_lens_tensor,
             num_prefills=real_num_seqs,

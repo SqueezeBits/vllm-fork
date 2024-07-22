@@ -49,7 +49,7 @@ def paged_attention_v1(query,
                        kv_cache_dtype=None,
                        block_num=None) -> None:
     if block_num is not None:
-        block_tables = block_tables[:block_num, ...]
+        block_tables = block_tables[:, :block_num]
     seq_len = block_tables.size(1)
     batch_size, query_heads, _ = query.shape
     _, _, kv_heads, _ = key_cache.shape
