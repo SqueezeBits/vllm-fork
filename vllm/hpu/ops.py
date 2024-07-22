@@ -47,12 +47,13 @@ def paged_attention_v1(query,
                        block_size,
                        alibi_slopes=None,
                        kv_cache_dtype=None,
-                       block_num=None) -> None:
-    if block_num is not None:
-        block_tables = block_tables[:, :block_num]
-    seq_len = block_tables.size(1)
+                       block_num=None,
+                       num_decode_tokens=None) -> None:
     batch_size, query_heads, _ = query.shape
     _, _, kv_heads, _ = key_cache.shape
+    if block_num is not None and num_decode_tokens is not None:
+        block_tables = block_tables[:num_decode_tokens, :block_num]
+    seq_len = block_tables.size(1)
     min_inf = torch.finfo(query.dtype).min
 
     mask = (torch.arange(0,

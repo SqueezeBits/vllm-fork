@@ -308,6 +308,7 @@ class HabanaAttentionImpl(AttentionImpl):
                 self.alibi_slopes,
                 kv_scale,
                 decode_meta.block_num,
+                num_decode_tokens,
             ).reshape(batch_size, -1, hidden_size)
 
         # Reshape the output tensor.
