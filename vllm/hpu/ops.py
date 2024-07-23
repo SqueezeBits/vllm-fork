@@ -32,8 +32,7 @@ def fetch_from_cache(cache, blocks, permutations):
 def fetch_from_cache_1d(cache, blocks, seq_len):
     blocks_list = blocks.flatten()
     data = cache.index_select(0, blocks_list)
-    if seq_len > 1:
-        data = data.view(blocks.shape[0], -1, cache.shape[2], cache.shape[3])
+    data = data.view(blocks.shape[0], -1, cache.shape[2], cache.shape[3])
     return data
 
 @hpu_utils.with_mark_steps
