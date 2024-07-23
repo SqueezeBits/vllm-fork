@@ -125,7 +125,7 @@ class HpuModelAdapter():
     def __init__(self, model):
         self.model = model
 
-    def _set_attn_bias(self, attn_metadata, batch_size, seq_len, prefill_len, device,
+    def _set_attn_bias(self, attn_metadata, batch_size, seq_len, valid_prefill_len, device,
                        dtype, enable_1d_prefill = False):
         prefill_metadata = attn_metadata.prefill_metadata
         if prefill_metadata is None:
@@ -154,15 +154,17 @@ class HpuModelAdapter():
             cur_masks = [torch.tril(torch.ones((size, size), device=device, dtype=torch.bool)) for size in prompt_lens_t]
             past_masks = [torch.ones((q_len, past_kv_len), device=device, dtype=torch.bool)
                            for q_len, past_kv_len in zip(prompt_lens_t, context_lens_t)]
-            pad_len = round_up(context_lens_t[0], seq_len) - context_lens_t[0]
-            if pad_len > 0:
-                past_masks[0] = torch.cat((torch.zeros((prompt_lens_t[0], pad_len), device=device, dtype=torch.bool), past_masks[0]), dim=1)
+            
+            # padding for past kv bucketing
+            past_pad_len = round_up(context_lens_t[0], seq_len) - context_lens_t[0]
+            if past_pad_len > 0:
+                past_masks[0] = torch.cat((torch.zeros((prompt_lens_t[0], past_pad_len), device=device, dtype=torch.bool), past_masks[0]), dim=1)
             masks_per_prompt = [torch.cat((past, cur), dim=1) for past, cur in zip(past_masks, cur_masks)]
 
             # For chunked-prefill, pad mask upto chunk size(=seq_len)
-            pad_len = seq_len - prefill_len
-            if pad_len > 0:
-                masks_per_prompt.append(torch.zeros((pad_len, pad_len), device=device, dtype=torch.bool))
+            prefill_pad_len = seq_len - valid_prefill_len
+            if prefill_pad_len > 0:
+                masks_per_prompt.append(torch.zeros((prefill_pad_len, prefill_pad_len), device=device, dtype=torch.bool))
 
             mask = torch.block_diag(*masks_per_prompt)
             attn_bias = (torch.zeros_like(mask, dtype=dtype)
@@ -181,12 +183,18 @@ class HpuModelAdapter():
 
         enable_1d_prefill = kwargs.pop("enable_1d_prefill", False)
         input_ids = kwargs['input_ids']
-        
+
+        # These variables are required for chunked-prefill.
+        prefill_size = kwargs.pop("max_num_batched_tokens", 512)
+        decode_size = kwargs.pop("max_num_seqs", 256)
+        valid_prefill_tokens = kwargs['attn_metadata'].num_prefill_tokens
+        valid_decode_tokens = kwargs['attn_metadata'].num_decode_tokens
+
         attn_metadata = kwargs['attn_metadata']
         kwargs['attn_metadata'] = self._set_attn_bias(
             attn_metadata,
             input_ids.size(0),
-            input_ids.size(1),
+            input_ids.size(1) if not enable_1d_prefill else prefill_size,
             attn_metadata.num_prefill_tokens.item(),
             input_ids.device,
             torch.bfloat16,
@@ -194,9 +202,18 @@ class HpuModelAdapter():
         )
         if enable_1d_prefill:
             kwargs['attn_metadata'] = self.trim_attn_metadata_before_forward(kwargs['attn_metadata'])
-            kwargs['attn_metadata'] = self.prepare_metadata(kwargs['attn_metadata'], chunk_size=input_ids.size(1))
+            kwargs['attn_metadata'] = self.prepare_metadata(kwargs['attn_metadata'], prefill_size, decode_size)
 
         hidden_states = self.model(*args, **kwargs)
+        if enable_1d_prefill:
+            # NOTE(sqzb): As now there are always paddings with prefill and decode each,
+            # selected_token_indices for decode sequences are not matched with the indices of the output hidden_states anymore.
+            # i.e. it should be (selected_token_indices += prefill_size) for decode sequences.
+            # Therefore, we should either modify selected_token_indices itself from the sampling metadata
+            # or extract only valid output from the hidden_states and use the selected_token_indices without modification.
+            # Currently, it's implemented in the latter way which is simpler, but graph behavior should be analyzed.
+            # TODO(huijong): investigate graph behavior for this concat and after.
+            hidden_states = torch.cat((hidden_states[:, :valid_prefill_tokens, :], hidden_states[:, prefill_size:prefill_size + valid_decode_tokens, :]), dim=1)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
         hidden_states = hidden_states.index_select(0, selected_token_indices)
         return hidden_states
@@ -231,13 +248,15 @@ class HpuModelAdapter():
                         {'prefill_metadata': prefill_metadata,
                          'decode_metadata': decode_metadata})
 
-    def prepare_metadata(self, metadata: AttentionMetadata, chunk_size: int):
-        def pad_block_table(block_table):
+    def prepare_metadata(self, metadata: AttentionMetadata, prefill_size: int, decode_size: int):
+        def pad_block_table(block_table, batch_size):
             seq_pad_len = self.get_max_block_num() - block_table.size(1)
-            batch_pad_len = chunk_size - block_table.size(0)
+            batch_pad_len = batch_size - block_table.size(0)
             padded_block_tables = torch.nn.functional.pad(block_table, (0, seq_pad_len, 0, batch_pad_len), value=0)
             return padded_block_tables
 
+        metadata = metadata._replace(num_prefill_tokens=torch.tensor(prefill_size, device=metadata.num_prefill_tokens.device, dtype=metadata.num_prefill_tokens.dtype))
+        metadata = metadata._replace(num_decode_tokens=torch.tensor(decode_size, device=metadata.num_decode_tokens.device, dtype=metadata.num_decode_tokens.dtype))
         if metadata.prefill_metadata is not None:
             prefill_metadata = metadata.prefill_metadata
 
@@ -249,19 +268,19 @@ class HpuModelAdapter():
             prefill_metadata = prefill_metadata._replace(context_lens_tensor=prefill_metadata.context_lens_tensor[:1])
 
             # pad block table
-            prefill_metadata = prefill_metadata._replace(block_tables=pad_block_table(prefill_metadata.block_tables))
+            prefill_metadata = prefill_metadata._replace(block_tables=pad_block_table(prefill_metadata.block_tables, prefill_size))
 
             metadata = metadata._replace(prefill_metadata=prefill_metadata)
         if metadata.decode_metadata is not None:
             # seq_lens_tensor in decode_metadata is being used to create a mask for pagedattention.
             decode_metadata = metadata.decode_metadata
             seq_lens_tensor = decode_metadata.seq_lens_tensor
-            pad_len = chunk_size - seq_lens_tensor.size(0)
+            pad_len = decode_size - seq_lens_tensor.size(0)
             padded = torch.nn.functional.pad(seq_lens_tensor, (0, pad_len), value=torch.iinfo(seq_lens_tensor.dtype).max)
             decode_metadata = decode_metadata._replace(seq_lens_tensor=padded)
 
             # pad block table
-            decode_metadata = decode_metadata._replace(block_tables=pad_block_table(decode_metadata.block_tables))
+            decode_metadata = decode_metadata._replace(block_tables=pad_block_table(decode_metadata.block_tables, decode_size))
 
             metadata = metadata._replace(decode_metadata=decode_metadata)
         return metadata
@@ -1098,17 +1117,19 @@ class HabanaModelRunner:
                     sampling_metadata.selected_token_indices.add_(paddings)
             else:
                 # TODO(huijong): restore lora functionality
+                prefill_pad_len = self.scheduler_config.max_num_batched_tokens - input_tokens.size(1)
+                input_tokens = torch.nn.functional.pad(input_tokens, (0, prefill_pad_len), value=0)
+                input_positions = torch.nn.functional.pad(input_positions, (0, prefill_pad_len), value=0)
+                slot_mapping = torch.nn.functional.pad(slot_mapping, (0, prefill_pad_len), value=0)
+
+                decode_pad_len = self.scheduler_config.max_num_seqs - decode_input_tokens.size(1)
+                decode_input_tokens = torch.nn.functional.pad(decode_input_tokens, (0, decode_pad_len), value=0)
+                decode_input_positions = torch.nn.functional.pad(decode_input_positions, (0, decode_pad_len), value=0)
+                decode_slot_mapping = torch.nn.functional.pad(decode_slot_mapping, (0, decode_pad_len), value=0)
+
                 input_tokens = torch.concat((input_tokens, decode_input_tokens), dim=-1)
                 input_positions = torch.concat((input_positions, decode_input_positions), dim=-1)
                 slot_mapping = torch.concat((slot_mapping, decode_slot_mapping), dim=-1)
-                assert input_tokens.shape == input_positions.shape == slot_mapping.shape
-                chunk_size = self.scheduler_config.max_num_batched_tokens
-                if input_tokens.size(1) < chunk_size:
-                    pad_len = chunk_size - input_tokens.size(1)
-                    padding = torch.zeros((1, pad_len), dtype=input_tokens.dtype, device=input_tokens.device)
-                    input_tokens = torch.concat((input_tokens, padding), dim=-1)
-                    input_positions = torch.concat((input_positions, padding), dim=-1)
-                    slot_mapping = torch.concat((slot_mapping, padding), dim=-1)
 
             if self.lora_config:
                 lora_mapping = LoRAMapping(lora_index_mapping, lora_prompt_mapping)
@@ -1320,6 +1341,8 @@ class HabanaModelRunner:
                
                 bypass_hpu_graphs=not use_graphs,
                 enable_1d_prefill=self.scheduler_config.enable_1d_prefill,
+                max_num_batched_tokens=self.scheduler_config.max_num_batched_tokens,
+                max_num_seqs=self.scheduler_config.max_num_seqs,
             )
 
         # Compute the logits.
