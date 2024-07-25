@@ -234,12 +234,9 @@ class HabanaAttentionImpl(AttentionImpl):
                 if torch.sum(prefill_meta.context_lens_tensor) > 0:
                     # Chunked-prefill
                     # Concat past chunked kv
-                    assert batch_size == 1
-                    assert torch.sum(prefill_meta.context_lens_tensor != 0) == 1
                     context_len = torch.sum(prefill_meta.context_lens_tensor)
                     context_prompt_idx = torch.argmax(prefill_meta.context_lens_tensor)
                     # This assertion can be removed after a bug with torch.argmax has been fixed (from SynapseAI v1.17)
-                    assert context_prompt_idx == torch.max(prefill_meta.context_lens_tensor, dim=0).indices
                     past_block_num = (context_len - 1) // value_cache.shape[1] + 1
                     # TODO(minkyu): integrate fetch_from_cache_1d to fetch_from_cache
                     past_key = ops.fetch_from_cache_1d(
