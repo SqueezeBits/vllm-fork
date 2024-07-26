@@ -239,6 +239,7 @@ class HabanaAttentionImpl(AttentionImpl):
                         key_cache, 
                         value_cache,
                         prefill_meta.block_tables,
+                        prefill_meta.query_lens_tensor,
                         prefill_meta.context_lens_tensor,
                         attn_bias,
                         p=0.0,

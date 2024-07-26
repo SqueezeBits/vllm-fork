@@ -182,6 +182,7 @@ def prompt_attention_with_context(
     key_cache: torch.Tensor,
     value_cache: torch.Tensor,
     block_table: torch.Tensor,
+    query_len: torch.Tensor,
     context_len: torch.Tensor,
     attn_bias: torch.Tensor,
     p,
@@ -197,12 +198,14 @@ def prompt_attention_with_context(
     query.mul_(scale)
 
     num_blocks = block_table.size(-1)
+    
+    # TODO(minkyu): optimize this
     past_attn_mask = torch.arange(0, num_blocks * block_size, dtype=torch.int32, device=key_cache.device)
     past_attn_mask = past_attn_mask.ge(context_len)
     past_attn_mask = past_attn_mask.view(1, -1)
     past_attn_mask = past_attn_mask.expand(num_tokens, -1)
+    past_attn_mask[query_len:,:] = 1
     past_attn_mask = past_attn_mask.reshape(1, 1, num_tokens, -1)
-    # TODO: use query len and mask the past_attn_mask
 
     past_keys = fetch_from_cache(key_cache, block_table, (0, 2, 3, 1))
     if query_heads != kv_heads:

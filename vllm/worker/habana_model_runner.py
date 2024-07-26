@@ -148,30 +148,16 @@ class HpuModelAdapter():
         else:
             # TODO(minkyu): benchmark overheads
             prompt_lens_t = prefill_metadata.query_lens_tensor
-            context_lens_t = prefill_metadata.context_lens_tensor
-            cur_masks = [torch.tril(torch.ones((size, size), device=device, dtype=torch.bool)) for size in prompt_lens_t]
-            past_masks = [torch.ones((q_len, past_kv_len), device=device, dtype=torch.bool)
-                           for q_len, past_kv_len in zip(prompt_lens_t, context_lens_t)]
-            
-            # padding for past kv bucketing
-            past_pad_len = round_up(context_lens_t[0], seq_len) - context_lens_t[0]
-            if past_pad_len > 0:
-                past_masks[0] = torch.cat((torch.zeros((prompt_lens_t[0], past_pad_len), device=device, dtype=torch.bool), past_masks[0]), dim=1)
-            masks_per_prompt = [torch.cat((past, cur), dim=1) for past, cur in zip(past_masks, cur_masks)]
-
-            # For chunked-prefill, pad mask upto chunk size(=seq_len)
+            masks_per_prompt = [torch.ones((size, size), device=device, dtype=torch.bool) for size in prompt_lens_t]
             prefill_pad_len = seq_len - valid_prefill_len
-            if prefill_pad_len > 0:
-                masks_per_prompt.append(torch.zeros((prefill_pad_len, prefill_pad_len), device=device, dtype=torch.bool))
-
-            mask = torch.block_diag(*masks_per_prompt)
+            masks_per_prompt.append(torch.zeros((prefill_pad_len, prefill_pad_len), device=device, dtype=torch.bool))
+            mask = torch.tril(torch.block_diag(*masks_per_prompt))
             attn_bias = (torch.zeros_like(mask, dtype=dtype)
                             .masked_fill_(mask==0, torch.finfo(dtype).min)
                             .view(1, 1, *mask.shape))
         prefill_metadata = prefill_metadata._replace(attn_bias=attn_bias)
         attn_metadata = attn_metadata._replace(prefill_metadata=prefill_metadata)
         return attn_metadata
-
 
     def forward(self, *args, **kwargs):
         kwargs = kwargs.copy()
@@ -231,6 +217,7 @@ class HpuModelAdapter():
                                     ['block_tables',
                                      'block_num',
                                      'attn_bias',
+                                     'query_lens_tensor',
                                      'context_lens_tensor'])
         decode_metadata = subtuple(metadata.decode_metadata,
                                    'TrimmedDecodeModelMetadata',
@@ -262,6 +249,7 @@ class HpuModelAdapter():
             # which means the below assertions should pass,
             # only pass the first element to the model to remove dynamicity in the metadata.
             prefill_metadata = prefill_metadata._replace(context_lens_tensor=prefill_metadata.context_lens_tensor[:1])
+            prefill_metadata = prefill_metadata._replace(query_lens_tensor=prefill_metadata.query_lens_tensor[:1])
 
             metadata = metadata._replace(prefill_metadata=prefill_metadata)
         if metadata.decode_metadata is not None:
