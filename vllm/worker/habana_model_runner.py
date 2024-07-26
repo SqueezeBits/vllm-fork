@@ -125,7 +125,7 @@ class HpuModelAdapter():
     def __init__(self, model):
         self.model = model
 
-    def _set_attn_bias(self, attn_metadata, batch_size, seq_len, valid_prefill_len, device,
+    def _set_attn_bias(self, attn_metadata, batch_size, seq_len, device,
                        dtype, enable_1d_prefill = False):
         prefill_metadata = attn_metadata.prefill_metadata
         if prefill_metadata is None:
@@ -143,19 +143,9 @@ class HpuModelAdapter():
             mask = causal_mask.logical_or(len_mask)
             attn_bias = (torch.zeros_like(mask, dtype=dtype).masked_fill_(
                 mask, -math.inf))
+            prefill_metadata = prefill_metadata._replace(attn_bias=attn_bias)
             #FIXME: Restore sliding window support
             #if self.sliding_window is not None:
-        else:
-            # TODO(minkyu): benchmark overheads
-            prompt_lens_t = prefill_metadata.query_lens_tensor
-            masks_per_prompt = [torch.ones((size, size), device=device, dtype=torch.bool) for size in prompt_lens_t]
-            prefill_pad_len = seq_len - valid_prefill_len
-            masks_per_prompt.append(torch.zeros((prefill_pad_len, prefill_pad_len), device=device, dtype=torch.bool))
-            mask = torch.tril(torch.block_diag(*masks_per_prompt))
-            attn_bias = (torch.zeros_like(mask, dtype=dtype)
-                            .masked_fill_(mask==0, torch.finfo(dtype).min)
-                            .view(1, 1, *mask.shape))
-        prefill_metadata = prefill_metadata._replace(attn_bias=attn_bias)
         attn_metadata = attn_metadata._replace(prefill_metadata=prefill_metadata)
         return attn_metadata
 
@@ -179,7 +169,6 @@ class HpuModelAdapter():
             attn_metadata,
             input_ids.size(0),
             input_ids.size(1) if not enable_1d_prefill else prefill_size,
-            valid_prefill_tokens,
             input_ids.device,
             torch.bfloat16,
             enable_1d_prefill=enable_1d_prefill,
@@ -196,7 +185,6 @@ class HpuModelAdapter():
             # Therefore, we should either modify selected_token_indices itself from the sampling metadata
             # or extract only valid output from the hidden_states and use the selected_token_indices without modification.
             # Currently, it's implemented in the latter way which is simpler, but graph behavior should be analyzed.
-            # TODO(huijong): investigate graph behavior for this concat and after.
             hidden_states = torch.cat((hidden_states[:, :valid_prefill_tokens, :], hidden_states[:, prefill_size:prefill_size + valid_decode_tokens, :]), dim=1)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
         hidden_states = hidden_states.index_select(0, selected_token_indices)
@@ -242,16 +230,6 @@ class HpuModelAdapter():
 
         metadata = metadata._replace(num_prefill_tokens=torch.tensor(prefill_size, device=metadata.num_prefill_tokens.device, dtype=metadata.num_prefill_tokens.dtype))
         metadata = metadata._replace(num_decode_tokens=torch.tensor(decode_size, device=metadata.num_decode_tokens.device, dtype=metadata.num_decode_tokens.dtype))
-        if metadata.prefill_metadata is not None:
-            prefill_metadata = metadata.prefill_metadata
-
-            # As only the first sequence in a prefill batch can have the previous chunk,
-            # which means the below assertions should pass,
-            # only pass the first element to the model to remove dynamicity in the metadata.
-            prefill_metadata = prefill_metadata._replace(context_lens_tensor=prefill_metadata.context_lens_tensor[:1])
-            prefill_metadata = prefill_metadata._replace(query_lens_tensor=prefill_metadata.query_lens_tensor[:1])
-
-            metadata = metadata._replace(prefill_metadata=prefill_metadata)
         if metadata.decode_metadata is not None:
             # seq_lens_tensor in decode_metadata is being used to create a mask for pagedattention.
             decode_metadata = metadata.decode_metadata
@@ -824,7 +802,7 @@ class HabanaModelRunner:
         max_seq_len = max(seq_lens)
         assert max_query_len > 0
 
-        context_lens_tensor = torch.tensor(context_lens,
+        context_lens_tensor = torch.tensor(context_lens[0],
                                            dtype=torch.int,
                                            device=self.device)
 
@@ -850,7 +828,7 @@ class HabanaModelRunner:
 
         # Query length can be shorter than key (i.e., prompt) when prefill
         # is chunked or prefix cached.
-        query_lens_tensor = torch.tensor(query_lens,
+        query_lens_tensor = torch.tensor(query_lens[0],
                                          dtype=torch.long,
                                          device=self.device)
         seq_lens_tensor = torch.tensor(seq_lens,
@@ -873,6 +851,15 @@ class HabanaModelRunner:
                                                dtype=torch.long,
                                                device=self.device)
 
+        # NOTE: Make attn_bias on cpu,
+        # because it causes re-compilation on hpu.
+        masks_per_prompt = [torch.ones((size, size), device="cpu", dtype=torch.bool) for size in query_lens]
+        prefill_pad_len = self.scheduler_config.max_num_batched_tokens - sum_query_len
+        masks_per_prompt.append(torch.zeros((prefill_pad_len, prefill_pad_len), device="cpu", dtype=torch.bool))
+        mask = torch.tril(torch.block_diag(*masks_per_prompt))
+        attn_bias = (torch.zeros_like(mask, dtype=torch.bfloat16)
+                        .masked_fill_(mask==0, torch.finfo(torch.bfloat16).min)
+                        .view(1, 1, *mask.shape).to("hpu"))
 
         attn_metadata = self.attn_backend.make_metadata(
             is_prompt=True,
@@ -891,6 +878,7 @@ class HabanaModelRunner:
             num_prefill_tokens=sum_query_len,
             num_decode_tokens=0,
         )
+        attn_metadata.attn_bias = attn_bias
         return PreparePromptMetadata(
             input_tokens=input_tokens,
             input_positions=input_positions,
