@@ -263,9 +263,6 @@ class HpuModelAdapter():
             # only pass the first element to the model to remove dynamicity in the metadata.
             prefill_metadata = prefill_metadata._replace(context_lens_tensor=prefill_metadata.context_lens_tensor[:1])
 
-            # pad block table
-            prefill_metadata = prefill_metadata._replace(block_tables=pad_block_table(prefill_metadata.block_tables, 1))
-
             metadata = metadata._replace(prefill_metadata=prefill_metadata)
         if metadata.decode_metadata is not None:
             # seq_lens_tensor in decode_metadata is being used to create a mask for pagedattention.
@@ -769,7 +766,8 @@ class HabanaModelRunner:
                 if seq_group_metadata.block_tables is not None:
                     # Prefill has chunked before.
                     block_table = seq_group_metadata.block_tables[seq_id]
-                    prefix_block_tables.append(block_table)
+                    # TODO(minkyu): shouldn't we use computed_block_nums for this? 
+                    prefix_block_tables.append(block_table[:-(context_len//-self.block_size)])
                 else:
                     # The first prefill.
                     prefix_block_tables.append([])
@@ -851,14 +849,16 @@ class HabanaModelRunner:
         else:
             multi_modal_input = None
 
-        max_prompt_block_table_len = max(len(t) for t in prefix_block_tables)
+        # max_prompt_block_table_len = max(len(t) for t in prefix_block_tables)
         # max_prompt_len = max(find_bucket(max(seq_lens), self.prompt_seq_bucket_cfg), self.block_size)
 
-        block_tables = make_tensor_with_pad(prefix_block_tables,
-                                            max_len=max_prompt_block_table_len,
-                                            pad=0,
-                                            dtype=torch.int,
-                                            device=self.device)
+        # TODO(minkyu): reconsider using prefix_block_tables, we might need this for prefix caching
+        # block_tables = make_tensor_with_pad(prefix_block_tables,
+        #                                     max_len=max_prompt_block_table_len,
+        #                                     pad=0,
+        #                                     dtype=torch.int,
+        #                                     device=self.device)
+        block_tables = torch.tensor([prefix_block_tables[0]], dtype=torch.int, device=self.device)
 
         # Query length can be shorter than key (i.e., prompt) when prefill
         # is chunked or prefix cached.
