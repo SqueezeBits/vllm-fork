@@ -222,7 +222,7 @@ def prompt_attention_with_context(
     past_attn_weights = [torch.matmul(query, k) for k in past_keys]
     past_attn_weights = torch.concat(past_attn_weights, dim=-1)
 
-    past_attn_weights.masked_fill(past_attn_mask, torch.finfo(query.dtype).min)
+    past_attn_weights.masked_fill_(past_attn_mask, torch.finfo(query.dtype).min)
 
     attn_weights = torch.concat((past_attn_weights, cur_attn_weights), dim=-1)
     attn_weights = torch.softmax(attn_weights, dim=-1)

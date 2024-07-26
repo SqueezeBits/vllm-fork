@@ -733,7 +733,7 @@ class HabanaModelRunner:
                     # Prefill has chunked before.
                     block_table = seq_group_metadata.block_tables[seq_id]
                     # TODO(minkyu): shouldn't we use computed_block_nums for this? 
-                    prefix_block_tables.append(block_table[:-(context_len//-self.block_size)])
+                    prefix_block_tables.append(block_table[:(context_len - 1) // self.block_size + 1])
                 else:
                     # The first prefill.
                     prefix_block_tables.append([])
