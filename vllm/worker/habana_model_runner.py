@@ -185,7 +185,7 @@ class HpuModelAdapter():
             # Therefore, we should either modify selected_token_indices itself from the sampling metadata
             # or extract only valid output from the hidden_states and use the selected_token_indices without modification.
             # Currently, it's implemented in the latter way which is simpler, but graph behavior should be analyzed.
-            hidden_states = torch.cat((hidden_states[:, :valid_prefill_tokens, :], hidden_states[:, prefill_size:prefill_size + valid_decode_tokens, :]), dim=1)
+            hidden_states = torch.cat((hidden_states[:, :valid_prefill_tokens, :], hidden_states[:, prefill_size:, :]), dim=1)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
         hidden_states = hidden_states.index_select(0, selected_token_indices)
         return hidden_states
