@@ -232,34 +232,27 @@ class HabanaAttentionImpl(AttentionImpl):
                 query_shape = (batch_size, -1, self.num_heads, self.head_size)
                 kv_shape = (batch_size, -1, self.num_kv_heads, self.head_size)
                 if torch.sum(prefill_meta.context_lens_tensor) > 0:
-                    # Chunked-prefill
-                    # Concat past chunked kv
-                    context_len = torch.sum(prefill_meta.context_lens_tensor)
-                    context_prompt_idx = torch.argmax(prefill_meta.context_lens_tensor)
-                    # This assertion can be removed after a bug with torch.argmax has been fixed (from SynapseAI v1.17)
-                    past_block_num = (context_len - 1) // value_cache.shape[1] + 1
-                    # TODO(minkyu): integrate fetch_from_cache_1d to fetch_from_cache
-                    past_key = ops.fetch_from_cache_1d(
+                    out = ops.prompt_attention_with_context(
+                        prompt_query.view(query_shape), 
+                        prompt_key.view(kv_shape), 
+                        prompt_value.view(kv_shape), 
                         key_cache, 
-                        prefill_meta.block_tables[context_prompt_idx, :past_block_num].unsqueeze(0),
-                    )
-                    past_value = ops.fetch_from_cache_1d(
                         value_cache,
-                        prefill_meta.block_tables[context_prompt_idx, :past_block_num].unsqueeze(0),
+                        prefill_meta.block_tables,
+                        prefill_meta.context_lens_tensor,
+                        attn_bias,
+                        p=0.0,
+                        scale=self.scale
                     )
-                    prompt_key = torch.cat((past_key.squeeze(0)[:context_len], prompt_key))
-                    prompt_value = torch.cat((past_value.squeeze(0)[:context_len], prompt_value))
-                    prompt_key = pad_to_bucket(prompt_key, num_prefill_tokens)
-                    prompt_value = pad_to_bucket(prompt_value, num_prefill_tokens)
-                    kv_shape = (batch_size, -1, self.num_kv_heads, self.head_size)
-                out = ops.prompt_attention(
-                    prompt_query.view(query_shape),
-                    prompt_key.view(kv_shape),
-                    prompt_value.view(kv_shape),
-                    attn_bias=attn_bias,
-                    p=0.0,
-                    scale=self.scale,
-                )
+                else:
+                    out = ops.prompt_attention(
+                        prompt_query.view(query_shape),
+                        prompt_key.view(kv_shape),
+                        prompt_value.view(kv_shape),
+                        attn_bias=attn_bias,
+                        p=0.0,
+                        scale=self.scale,
+                    )
                 prompt_output = out.reshape(batch_size, -1, hidden_size)
             else:
                 # prefix-enabled attention

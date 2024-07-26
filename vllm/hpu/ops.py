@@ -173,3 +173,66 @@ def prompt_attention(
         attn_weights = attn_weights.flatten(1, 2)
     attn_weights = attn_weights.transpose(1, 2)
     return attn_weights
+
+@hpu_utils.with_mark_steps
+def prompt_attention_with_context(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    key_cache: torch.Tensor,
+    value_cache: torch.Tensor,
+    block_table: torch.Tensor,
+    context_len: torch.Tensor,
+    attn_bias: torch.Tensor,
+    p,
+    scale,
+) -> torch.Tensor:
+    _, num_tokens, query_heads, _ = query.shape
+    _, _, kv_heads, block_size = key_cache.shape
+    
+    query = query.transpose(2, 1)
+    key = key.transpose(2, 1)
+    value = value.transpose(2, 1)
+
+    query.mul_(scale)
+
+    num_blocks = block_table.size(-1)
+    past_attn_mask = torch.arange(0, num_blocks * block_size, dtype=torch.int32, device=key_cache.device)
+    past_attn_mask = past_attn_mask.ge(context_len)
+    past_attn_mask = past_attn_mask.view(1, -1)
+    past_attn_mask = past_attn_mask.expand(num_tokens, -1)
+    past_attn_mask = past_attn_mask.reshape(1, 1, num_tokens, -1)
+    # TODO: use query len and mask the past_attn_mask
+
+    past_keys = fetch_from_cache(key_cache, block_table, (0, 2, 3, 1))
+    if query_heads != kv_heads:
+        query = query.unflatten(1, (kv_heads, -1))
+        key = key.unflatten(1, (kv_heads, 1))
+        value = value.unflatten(1, (kv_heads, 1))
+        past_keys = [k.unflatten(1, (kv_heads, 1)) for k in past_keys]
+        attn_bias = attn_bias.unsqueeze(2)
+        past_attn_mask = past_attn_mask.unsqueeze(2)
+
+    cur_attn_weights = torch.matmul(query, key.transpose(-1, -2))
+    cur_attn_weights.add_(attn_bias)
+
+    past_attn_weights = [torch.matmul(query, k) for k in past_keys]
+    past_attn_weights = torch.concat(past_attn_weights, dim=-1)
+
+    past_attn_weights.masked_fill(past_attn_mask, torch.finfo(query.dtype).min)
+
+    attn_weights = torch.concat((past_attn_weights, cur_attn_weights), dim=-1)
+    attn_weights = torch.softmax(attn_weights, dim=-1)
+
+    past_values = fetch_from_cache(value_cache, block_table, (0, 2, 1, 3))
+    if query_heads != kv_heads:
+        past_values = [v.unflatten(1, (kv_heads, 1)) for v in past_values]
+
+    value = torch.concat(past_values + [value], dim=-2)
+
+    attn_weights = torch.matmul(attn_weights, value)
+    if query_heads != kv_heads:
+        attn_weights = attn_weights.flatten(1, 2)
+
+    attn_weights = attn_weights.transpose(1, 2)
+    return attn_weights
