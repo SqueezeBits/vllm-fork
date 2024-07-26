@@ -203,7 +203,7 @@ def prompt_attention_with_context(
     past_attn_mask = torch.arange(0, num_blocks * block_size, dtype=torch.int32, device=key_cache.device)
     past_attn_mask = past_attn_mask.ge(context_len)
     past_attn_mask = past_attn_mask.view(1, -1)
-    past_attn_mask = past_attn_mask.expand(num_tokens, -1)
+    past_attn_mask = past_attn_mask.expand(num_tokens, -1).clone()
     past_attn_mask[query_len:,:] = 1
     past_attn_mask = past_attn_mask.reshape(1, 1, num_tokens, -1)
 
