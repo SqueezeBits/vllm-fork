@@ -162,7 +162,6 @@ class HpuModelAdapter():
         prefill_size = kwargs.pop("max_num_batched_tokens", 512)
         decode_size = kwargs.pop("max_num_seqs", 256)
         valid_prefill_tokens = kwargs['attn_metadata'].num_prefill_tokens
-        valid_decode_tokens = kwargs['attn_metadata'].num_decode_tokens
 
         attn_metadata = kwargs['attn_metadata']
         kwargs['attn_metadata'] = self._set_attn_bias(
@@ -203,14 +202,12 @@ class HpuModelAdapter():
         prefill_metadata = subtuple(metadata.prefill_metadata,
                                     'TrimmedPrefillModelMetadata',
                                     ['block_tables',
-                                     'block_num',
                                      'attn_bias',
                                      'query_lens_tensor',
                                      'context_lens_tensor'])
         decode_metadata = subtuple(metadata.decode_metadata,
                                    'TrimmedDecodeModelMetadata',
                                    ['block_tables',
-                                    'block_num',
                                     'seq_lens_tensor',
                                     ])
         return subtuple(metadata,
@@ -222,31 +219,9 @@ class HpuModelAdapter():
                          'decode_metadata': decode_metadata})
 
     def prepare_metadata(self, metadata: AttentionMetadata, prefill_size: int, decode_size: int):
-        def pad_block_table(block_table, batch_size):
-            seq_pad_len = self.get_max_block_num() - block_table.size(1)
-            batch_pad_len = batch_size - block_table.size(0)
-            padded_block_tables = torch.nn.functional.pad(block_table, (0, seq_pad_len, 0, batch_pad_len), value=0)
-            return padded_block_tables
-
         metadata = metadata._replace(num_prefill_tokens=torch.tensor(prefill_size, device=metadata.num_prefill_tokens.device, dtype=metadata.num_prefill_tokens.dtype))
         metadata = metadata._replace(num_decode_tokens=torch.tensor(decode_size, device=metadata.num_decode_tokens.device, dtype=metadata.num_decode_tokens.dtype))
-        if metadata.decode_metadata is not None:
-            # seq_lens_tensor in decode_metadata is being used to create a mask for pagedattention.
-            decode_metadata = metadata.decode_metadata
-            seq_lens_tensor = decode_metadata.seq_lens_tensor
-            pad_len = decode_size - seq_lens_tensor.size(0)
-            padded = torch.nn.functional.pad(seq_lens_tensor, (0, pad_len), value=torch.iinfo(seq_lens_tensor.dtype).max)
-            decode_metadata = decode_metadata._replace(seq_lens_tensor=padded)
-
-            # pad block table
-            decode_metadata = decode_metadata._replace(block_tables=pad_block_table(decode_metadata.block_tables, decode_size))
-
-            metadata = metadata._replace(decode_metadata=decode_metadata)
         return metadata
-    
-    def get_max_block_num(self, max_model_len=2048, block_size=128):
-        # TODO(minkyu): parse max_model_len and block_size properly
-        return (max_model_len - 1) // block_size + 1
 
 
 class PreparePromptMetadata(NamedTuple):
@@ -657,7 +632,6 @@ class HabanaModelRunner:
             seq_start_loc=seq_start_loc,
             context_lens_tensor=context_lens_tensor,
             block_tables=block_tables,
-            block_num=torch.tensor(block_tables.shape[1], device=block_tables.device, dtype=block_tables.dtype),
             use_cuda_graph=False,
             num_prefills=real_num_seqs,
             num_prefill_tokens=sum_query_len,
@@ -871,7 +845,6 @@ class HabanaModelRunner:
             seq_start_loc=None,
             context_lens_tensor=context_lens_tensor,
             block_tables=block_tables,
-            block_num=torch.tensor(block_tables.shape[1], device=block_tables.device, dtype=block_tables.dtype),
             use_cuda_graph=False,
             query_lens_tensor=query_lens_tensor,
             num_prefills=real_num_seqs,
@@ -960,6 +933,18 @@ class HabanaModelRunner:
             slot_mapping = torch.tensor(slot_mapping,
                                         dtype=torch.long,
                                         device=self.device)
+            seq_lens_tensor = torch.tensor(seq_lens,
+                                       dtype=torch.int,
+                                       device=self.device)
+            max_block_table_len = max(
+                len(block_table) for block_table in block_tables)
+            block_tables = make_tensor_with_pad(
+                block_tables,
+                max_len=max_block_table_len,
+                pad=0,
+                dtype=torch.int,
+                device=self.device,
+            )
         else:
             input_tokens = make_tensor_with_pad_1d([input_token[0] for input_token in input_tokens],
                                                self.scheduler_config.max_num_seqs,
@@ -976,21 +961,23 @@ class HabanaModelRunner:
                                                     pad=0,
                                                     dtype=torch.long,
                                                     device=self.device)
-        
-        seq_lens_tensor = torch.tensor(seq_lens,
-                                       dtype=torch.int,
-                                       device=self.device)
+            seq_lens_tensor = make_tensor_with_pad_1d(seq_lens,
+                                                      self.scheduler_config.max_num_seqs,
+                                                      pad=torch.iinfo(torch.int).max,
+                                                      dtype=torch.int,
+                                                      device=self.device)
+            max_block_table_len = max(
+                len(block_table) for block_table in block_tables)
+            block_tables_padding = [[0] * max_block_table_len] * (self.scheduler_config.max_num_seqs - len(block_tables))
+            block_tables = make_tensor_with_pad(
+                block_tables + block_tables_padding,
+                max_len=max_block_table_len,
+                pad=0,
+                dtype=torch.int,
+                device=self.device,
+            )
+
         num_decode_tokens = sum(seq_lens)
-        max_block_table_len = max(
-            len(block_table) for block_table in block_tables)
-        block_tables = make_tensor_with_pad(
-            block_tables,
-            max_len=max_block_table_len,
-            pad=0,
-            dtype=torch.int,
-            device=self.device,
-        )
-        
         attn_metadata = self.attn_backend.make_metadata(
             is_prompt=False,
             seq_lens=None,
@@ -1000,7 +987,6 @@ class HabanaModelRunner:
             seq_start_loc=None,
             context_lens_tensor=None,
             block_tables=block_tables,
-            block_num=torch.tensor(block_tables.shape[1], device=block_tables.device, dtype=block_tables.dtype),
             use_cuda_graph=False,
             num_prefills=0,
             num_prefill_tokens=0,
@@ -1238,7 +1224,6 @@ class HabanaModelRunner:
         prefill_metadata = subtuple(metadata.prefill_metadata,
                                     'TrimmedPrefillMetadata',
                                     ['block_tables',
-                                     'block_num',
                                      'seq_lens_tensor',
                                      'attn_bias',
                                      'query_lens_tensor',
@@ -1246,7 +1231,6 @@ class HabanaModelRunner:
         decode_metadata = subtuple(metadata.decode_metadata,
                                    'TrimmedDecodeMetadata',
                                    ['block_tables',
-                                    'block_num',
                                     'seq_lens_tensor',
                                     ])
         return subtuple(metadata,

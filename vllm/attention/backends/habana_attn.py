@@ -188,7 +188,7 @@ class HabanaAttentionImpl(AttentionImpl):
         Returns:
             shape = [num_tokens, num_heads * head_size]
         """
-        batch_size, seq_len, hidden_size = query.shape                
+        batch_size, _, hidden_size = query.shape                
         num_prefill_tokens = attn_metadata.num_prefill_tokens
         num_decode_tokens = attn_metadata.num_decode_tokens
         prompt_output = torch.zeros_like(query[:, :num_prefill_tokens, :])
@@ -285,8 +285,6 @@ class HabanaAttentionImpl(AttentionImpl):
                 self.scale,
                 self.alibi_slopes,
                 kv_scale,
-                decode_meta.block_num,
-                num_decode_tokens,
             ).reshape(batch_size, -1, hidden_size)
 
         # Reshape the output tensor.

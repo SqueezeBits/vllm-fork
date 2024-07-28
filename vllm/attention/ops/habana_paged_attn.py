@@ -26,7 +26,6 @@ class HabanaPagedAttentionMetadata:
     # 2nd dimensions are padded up to max_blocks_per_seq if it is cuda-graph
     # captured.
     block_tables: Optional[torch.Tensor]
-    block_num: Optional[torch.Tensor]
 
 
 class HabanaPagedAttention:
@@ -75,8 +74,6 @@ class HabanaPagedAttention:
         scale: float,
         alibi_slopes: Optional[torch.Tensor],
         kv_scale: float,
-        block_num: Optional[torch.Tensor],
-        num_decode_tokens: Optional[torch.Tensor],
     ) -> torch.Tensor:
         block_size = value_cache.shape[1]
         return ops.paged_attention_v1(
@@ -90,8 +87,6 @@ class HabanaPagedAttention:
             block_size,
             alibi_slopes,
             kv_cache_dtype,
-            block_num,
-            num_decode_tokens
         )
 
     @staticmethod
