@@ -161,7 +161,6 @@ class HpuModelAdapter():
         # These variables are required for chunked-prefill.
         prefill_size = kwargs.pop("max_num_batched_tokens", 512)
         decode_size = kwargs.pop("max_num_seqs", 256)
-        valid_prefill_tokens = kwargs['attn_metadata'].num_prefill_tokens
 
         attn_metadata = kwargs['attn_metadata']
         kwargs['attn_metadata'] = self._set_attn_bias(
@@ -174,17 +173,8 @@ class HpuModelAdapter():
         )
         if enable_1d_prefill:
             kwargs['attn_metadata'] = self.trim_attn_metadata_before_forward(kwargs['attn_metadata'])
-            kwargs['attn_metadata'] = self.prepare_metadata(kwargs['attn_metadata'], prefill_size, decode_size)
 
         hidden_states = self.model(*args, **kwargs)
-        if enable_1d_prefill:
-            # NOTE(sqzb): As now there are always paddings with prefill and decode each,
-            # selected_token_indices for decode sequences are not matched with the indices of the output hidden_states anymore.
-            # i.e. it should be (selected_token_indices += prefill_size) for decode sequences.
-            # Therefore, we should either modify selected_token_indices itself from the sampling metadata
-            # or extract only valid output from the hidden_states and use the selected_token_indices without modification.
-            # Currently, it's implemented in the latter way which is simpler, but graph behavior should be analyzed.
-            hidden_states = torch.cat((hidden_states[:, :valid_prefill_tokens, :], hidden_states[:, prefill_size:, :]), dim=1)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
         hidden_states = hidden_states.index_select(0, selected_token_indices)
         return hidden_states
@@ -217,11 +207,6 @@ class HpuModelAdapter():
                          'num_decode_tokens'],
                         {'prefill_metadata': prefill_metadata,
                          'decode_metadata': decode_metadata})
-
-    def prepare_metadata(self, metadata: AttentionMetadata, prefill_size: int, decode_size: int):
-        metadata = metadata._replace(num_prefill_tokens=torch.tensor(prefill_size, device=metadata.num_prefill_tokens.device, dtype=metadata.num_prefill_tokens.dtype))
-        metadata = metadata._replace(num_decode_tokens=torch.tensor(decode_size, device=metadata.num_decode_tokens.device, dtype=metadata.num_decode_tokens.dtype))
-        return metadata
 
 
 class PreparePromptMetadata(NamedTuple):
@@ -1043,10 +1028,10 @@ class HabanaModelRunner:
                 decode_lora_requests,
                 decode_slot_mapping,
             ) = self._prepare_decode(decode_reqs, chunked_prefill_enabled)
-                        
+
             sampling_metadata = SamplingMetadata.prepare(
                 seq_group_metadata_list, seq_lens, query_lens, self.device,
-                self.pin_memory)
+                self.pin_memory, self.scheduler_config)
 
             if not chunked_prefill_enabled:
                 # currently HPU does not support mixed batches when chunked prefill is disabled
@@ -1055,9 +1040,6 @@ class HabanaModelRunner:
             num_prefills = len(seq_lens)
             num_prefill_tokens = input_tokens.nelement()
             num_decode_tokens = decode_input_tokens.nelement()
-            if enable_1d_prefill:
-                num_prefill_tokens = prefill_attn_metadata.num_prefill_tokens if prefill_attn_metadata is not None else 0
-                num_decode_tokens = decode_attn_metadata.num_decode_tokens if decode_attn_metadata is not None else 0
                         
             if not chunked_prefill_enabled:
                 # NOTE(kzawora): Here we diverge from GPU code - we don't
@@ -1093,11 +1075,13 @@ class HabanaModelRunner:
                     input_tokens = torch.zeros((1, prefill_size), device=input_tokens.device, dtype=input_tokens.dtype)
                     input_positions = torch.zeros((1, prefill_size), device=input_positions.device, dtype=input_positions.dtype)
                     slot_mapping = torch.zeros((1, prefill_size), device=slot_mapping.device, dtype=slot_mapping.dtype)
+                    num_prefill_tokens = prefill_size
                 if decode_attn_metadata is None:
                     decode_size = self.scheduler_config.max_num_seqs
                     decode_input_tokens = torch.zeros((1, decode_size), device=decode_input_tokens.device, dtype=decode_input_tokens.dtype)
                     decode_input_positions = torch.zeros((1, decode_size), device=decode_input_positions.device, dtype=decode_input_positions.dtype)
                     decode_slot_mapping = torch.zeros((1, decode_size), device=decode_slot_mapping.device, dtype=decode_slot_mapping.dtype)
+                    num_decode_tokens = decode_size
 
                 input_tokens = torch.concat((input_tokens, decode_input_tokens), dim=-1)
                 input_positions = torch.concat((input_positions, decode_input_positions), dim=-1)
