@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Type
 
 import torch
+import habana_frameworks.torch as htorch
 
 import vllm.hpu.ops as ops
 from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
@@ -191,12 +192,15 @@ class HabanaAttentionImpl(AttentionImpl):
         batch_size, _, hidden_size = query.shape                
         num_prefill_tokens = attn_metadata.num_prefill_tokens
         num_decode_tokens = attn_metadata.num_decode_tokens
-        prompt_output = torch.zeros_like(query[:, :num_prefill_tokens, :])
-        decode_output = torch.zeros_like(query[:, num_prefill_tokens:, :])
         
         query = query.view(-1, self.num_heads, self.head_size)
         key = key.view(-1, self.num_kv_heads, self.head_size)
         value = value.view(-1, self.num_kv_heads, self.head_size)
+        prompt_output = torch.zeros(
+            (batch_size, num_prefill_tokens//batch_size, self.num_heads, self.head_size), 
+            dtype=query.dtype, 
+            device=query.device)
+        decode_output = torch.zeros_like(query[num_prefill_tokens:, :, :])
                 
         if kv_cache is not None:
             key_cache, value_cache = HabanaPagedAttention.split_kv_cache(kv_cache, self.num_kv_heads, self.head_size)
@@ -270,6 +274,9 @@ class HabanaAttentionImpl(AttentionImpl):
                     prefill_meta.max_query_len,
                     self.alibi_slopes,
                 )
+        else:
+            htorch.core.mark_step()
+            prompt_output = prompt_output.reshape(batch_size, -1, hidden_size)
         if decode_meta := attn_metadata.decode_metadata:
             # Decoding run.
             decode_query = query[num_prefill_tokens:, :, :]
@@ -286,6 +293,9 @@ class HabanaAttentionImpl(AttentionImpl):
                 self.alibi_slopes,
                 kv_scale,
             ).reshape(batch_size, -1, hidden_size)
+        else:
+            htorch.core.mark_step()
+            decode_output = decode_output.reshape(batch_size, -1, hidden_size)
 
         # Reshape the output tensor.
         output = torch.concat((prompt_output[:, :num_prefill_tokens, :], decode_output[:, :num_decode_tokens, :]), dim=1)

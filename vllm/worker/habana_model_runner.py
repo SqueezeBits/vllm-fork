@@ -175,6 +175,10 @@ class HpuModelAdapter():
             kwargs['attn_metadata'] = self.trim_attn_metadata_before_forward(kwargs['attn_metadata'])
 
         hidden_states = self.model(*args, **kwargs)
+        if enable_1d_prefill:
+            # Split graph to group below index_selct with logit_processor
+            # as they have the same dynamicity according to selected_token_indices.
+            htorch.core.mark_step()
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
         hidden_states = hidden_states.index_select(0, selected_token_indices)
         return hidden_states
