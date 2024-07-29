@@ -197,7 +197,6 @@ class HpuModelAdapter():
                                     'TrimmedPrefillModelMetadata',
                                     ['block_tables',
                                      'attn_bias',
-                                     'query_lens_tensor',
                                      'context_lens_tensor'])
         decode_metadata = subtuple(metadata.decode_metadata,
                                    'TrimmedDecodeModelMetadata',
@@ -816,13 +815,22 @@ class HabanaModelRunner:
 
         # NOTE: Make attn_bias on cpu,
         # because it causes re-compilation on hpu.
+        context_len = context_lens[0]
+        num_blocks = -(context_len // -self.block_size)
+        past_attn_mask = torch.arange(0, num_blocks * self.block_size, dtype=torch.int32, device="cpu")
+        past_attn_mask = past_attn_mask.ge(context_len)
+        past_attn_mask = past_attn_mask.view(1, -1)
+        past_attn_mask = past_attn_mask.expand(self.scheduler_config.max_num_batched_tokens, -1).clone()
+        past_attn_mask[query_lens[0]:,:] = 1
+        past_attn_mask = past_attn_mask.reshape(1, 1, self.scheduler_config.max_num_batched_tokens, -1)
+
         masks_per_prompt = [torch.ones((size, size), device="cpu", dtype=torch.bool) for size in query_lens]
         prefill_pad_len = self.scheduler_config.max_num_batched_tokens - sum_query_len
         masks_per_prompt.append(torch.zeros((prefill_pad_len, prefill_pad_len), device="cpu", dtype=torch.bool))
         mask = torch.tril(torch.block_diag(*masks_per_prompt))
-        attn_bias = (torch.zeros_like(mask, dtype=torch.bfloat16)
+        attn_bias = torch.concat((torch.zeros_like(mask, dtype=torch.bfloat16)
                         .masked_fill_(mask==0, torch.finfo(torch.bfloat16).min)
-                        .view(1, 1, *mask.shape).to("hpu"))
+                        .view(1, 1, *mask.shape), past_attn_mask), dim=-1).to("hpu")
 
         attn_metadata = self.attn_backend.make_metadata(
             is_prompt=True,
