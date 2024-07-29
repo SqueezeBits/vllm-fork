@@ -83,11 +83,12 @@ def paged_attention_v1(query,
         values = [v.unflatten(1, (kv_heads, 1)) for v in values]
     
 
-    attn_weights = [torch.matmul(a, v) for a, v in zip(attn_weights, values)]
+    attn_weights = [torch.matmul(a, v).squeeze(-2) for a, v in zip(attn_weights, values)]
     if query_heads != kv_heads:
         attn_weights = [a.flatten(1, 2) for a in attn_weights]
+
     attn_weights = sum(attn_weights)
-    return attn_weights.squeeze(-2)
+    return attn_weights
 
 
 def silu_and_mul_wrapper(x: torch.Tensor) -> torch.Tensor:
