@@ -29,11 +29,10 @@ def fetch_from_cache(cache, blocks, permutations):
         for i in range(blocks.size(1))
     ]
 
-def fetch_from_cache_1d(cache, blocks, seq_len):
+def fetch_from_cache_1d(cache, blocks):
     blocks_list = blocks.flatten()
     data = cache.index_select(0, blocks_list)
-    if seq_len > 1:
-        data = data.view(blocks.shape[0], -1, cache.shape[2], cache.shape[3])
+    data = data.view(blocks.shape[0], -1, cache.shape[2], cache.shape[3])
     return data
 
 @hpu_utils.with_mark_steps
@@ -47,10 +46,11 @@ def paged_attention_v1(query,
                        block_size,
                        alibi_slopes=None,
                        kv_cache_dtype=None) -> None:
-    seq_len = block_tables.size(1)
     batch_size, query_heads, _ = query.shape
     _, _, kv_heads, _ = key_cache.shape
+    seq_len = block_tables.size(1)
     min_inf = torch.finfo(query.dtype).min
+
     mask = (torch.arange(0,
                          seq_len * block_size,
                          dtype=torch.int32,
@@ -64,6 +64,7 @@ def paged_attention_v1(query,
         query = query.unflatten(1, (kv_heads, -1))
         keys = [k.unflatten(1, (kv_heads, 1)) for k in keys]
         mask = mask.unsqueeze(2)
+    
 
     attn_weights = [torch.matmul(query, k) for k in keys]
     attn_weights = torch.cat(attn_weights, dim=-1)
@@ -80,11 +81,14 @@ def paged_attention_v1(query,
         attn_weights = [attn_weights]
     if query_heads != kv_heads:
         values = [v.unflatten(1, (kv_heads, 1)) for v in values]
-    attn_weights = [torch.matmul(a, v) for a, v in zip(attn_weights, values)]
+    
+
+    attn_weights = [torch.matmul(a, v).squeeze(-2) for a, v in zip(attn_weights, values)]
     if query_heads != kv_heads:
         attn_weights = [a.flatten(1, 2) for a in attn_weights]
+
     attn_weights = sum(attn_weights)
-    return attn_weights.squeeze(-2)
+    return attn_weights
 
 
 def silu_and_mul_wrapper(x: torch.Tensor) -> torch.Tensor:
@@ -155,5 +159,55 @@ def prompt_attention(
     attn_weights = torch.matmul(attn_weights, value)
     if query_heads != kv_heads:
         attn_weights = attn_weights.flatten(1, 2)
+    attn_weights = attn_weights.transpose(1, 2)
+    return attn_weights
+
+@hpu_utils.with_mark_steps
+def prompt_attention_with_context(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    key_cache: torch.Tensor,
+    value_cache: torch.Tensor,
+    block_table: torch.Tensor,
+    attn_bias: torch.Tensor,
+    p,
+    scale,
+) -> torch.Tensor:
+    _, _, query_heads, _ = query.shape
+    _, _, kv_heads, _ = key_cache.shape
+    
+    query = query.transpose(2, 1)
+    key = key.transpose(2, 1)
+    value = value.transpose(2, 1)
+
+    query.mul_(scale)
+
+    past_keys = fetch_from_cache(key_cache, block_table, (0, 2, 3, 1))
+    if query_heads != kv_heads:
+        query = query.unflatten(1, (kv_heads, -1))
+        key = key.unflatten(1, (kv_heads, 1))
+        value = value.unflatten(1, (kv_heads, 1))
+        past_keys = [k.unflatten(1, (kv_heads, 1)) for k in past_keys]
+        attn_bias = attn_bias.unsqueeze(2)
+
+    cur_attn_weights = torch.matmul(query, key.transpose(-1, -2))
+    past_attn_weights = [torch.matmul(query, k) for k in past_keys]
+    past_attn_weights = torch.concat(past_attn_weights, dim=-1)
+
+    attn_weights = torch.concat((past_attn_weights, cur_attn_weights), dim=-1)
+    attn_weights = attn_weights + attn_bias
+    attn_weights = torch.softmax(attn_weights, dim=-1)
+
+    past_values = fetch_from_cache(value_cache, block_table, (0, 2, 1, 3))
+    if query_heads != kv_heads:
+        past_values = [v.unflatten(1, (kv_heads, 1)) for v in past_values]
+
+    value = torch.concat(past_values + [value], dim=-2)
+
+    attn_weights = torch.matmul(attn_weights, value)
+    if query_heads != kv_heads:
+        attn_weights = attn_weights.flatten(1, 2)
+
     attn_weights = attn_weights.transpose(1, 2)
     return attn_weights

@@ -714,6 +714,22 @@ def make_tensor_with_pad(
         padded_x[ind, :len(blocktb)] = blocktb
     return torch.tensor(padded_x, dtype=dtype, device=device)
 
+def make_tensor_with_pad_1d(
+    x: List[int],
+    max_len: int,
+    pad: int,
+    dtype: torch.dtype,
+    device: Optional[Union[str, torch.device]],
+) -> torch.Tensor:
+    """Make a padded tensor of a 1D inputs.
+
+    The padding is applied to the end of the list until it reaches
+    `max_len`.
+    """
+    padded_x = np.zeros([1, max_len], dtype=np.int32) + pad
+    padded_x[:, :len(x)] = x
+    return torch.tensor(padded_x, dtype=dtype, device=device)
+
 
 def async_tensor_h2d(
     data: list,

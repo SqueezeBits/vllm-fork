@@ -109,6 +109,7 @@ class Sampler(nn.Module):
             on_device_tensors = None
 
         # Get the logprobs query results.
+        logprobs = logprobs.to("cpu")
         prompt_logprobs, sample_logprobs = _get_logprobs(
             logprobs, sampling_metadata, sample_results)
         return _build_sampler_output(sample_results,

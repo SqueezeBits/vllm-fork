@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Type
 
 import torch
+import habana_frameworks.torch as htorch
 
 import vllm.hpu.ops as ops
 from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
@@ -190,15 +191,16 @@ class HabanaAttentionImpl(AttentionImpl):
         """
         batch_size, _, hidden_size = query.shape                
         num_prefill_tokens = attn_metadata.num_prefill_tokens
+        num_decode_tokens = attn_metadata.num_decode_tokens
         
         query = query.view(-1, self.num_heads, self.head_size)
         key = key.view(-1, self.num_kv_heads, self.head_size)
         value = value.view(-1, self.num_kv_heads, self.head_size)
-
-        prompt_query = query[:num_prefill_tokens, :, :]
-        decode_query = query[num_prefill_tokens:, :, :]
-        prompt_key = key[:num_prefill_tokens, :, :]
-        prompt_value = value[:num_prefill_tokens, :, :]
+        prompt_output = torch.zeros(
+            (batch_size, num_prefill_tokens//batch_size, self.num_heads, self.head_size), 
+            dtype=query.dtype, 
+            device=query.device)
+        decode_output = torch.zeros_like(query[num_prefill_tokens:, :, :])
                 
         if kv_cache is not None:
             key_cache, value_cache = HabanaPagedAttention.split_kv_cache(kv_cache, self.num_kv_heads, self.head_size)
@@ -210,10 +212,11 @@ class HabanaAttentionImpl(AttentionImpl):
                 key, value, key_cache, value_cache, attn_metadata.slot_mapping,
                 self.kv_cache_dtype, attn_metadata.decode_metadata is None)
 
-        prompt_output = None
-        decode_output = None
         if prefill_meta := attn_metadata.prefill_metadata:
             # Prompt run.
+            prompt_query = query[:num_prefill_tokens, :, :]
+            prompt_key = key[:num_prefill_tokens, :, :]
+            prompt_value = value[:num_prefill_tokens, :, :]
             # As HabanaPagedAttention.forward_prefix is not implemented yet,
             # always use xops.prompt_attention.
             # TODO: restore the original condition after HabanaPagedAttention.forward_prefix has been implemented
@@ -229,40 +232,30 @@ class HabanaAttentionImpl(AttentionImpl):
                                                       -attn_bias.size(2):,
                                                       -attn_bias.size(3):])
 
+
                 query_shape = (batch_size, -1, self.num_heads, self.head_size)
                 kv_shape = (batch_size, -1, self.num_kv_heads, self.head_size)
                 if torch.sum(prefill_meta.context_lens_tensor) > 0:
-                    # Chunked-prefill
-                    # Concat past chunked kv
-                    assert batch_size == 1
-                    assert torch.sum(prefill_meta.context_lens_tensor != 0) == 1
-                    context_len = torch.sum(prefill_meta.context_lens_tensor).item()
-                    context_prompt_idx = torch.argmax(prefill_meta.context_lens_tensor)
-                    # This assertion can be removed after a bug with torch.argmax has been fixed (from SynapseAI v1.17)
-                    assert context_prompt_idx == torch.max(prefill_meta.context_lens_tensor, dim=0).indices
-                    past_block_num = (context_len - 1) // value_cache.shape[1] + 1
-                    # TODO(minkyu): integrate fetch_from_cache_1d to fetch_from_cache
-                    past_key = ops.fetch_from_cache_1d(
+                    out = ops.prompt_attention_with_context(
+                        prompt_query.view(query_shape), 
+                        prompt_key.view(kv_shape), 
+                        prompt_value.view(kv_shape), 
                         key_cache, 
-                        prefill_meta.block_tables[context_prompt_idx, :past_block_num].unsqueeze(0),
-                        num_prefill_tokens
-                    )
-                    past_value = ops.fetch_from_cache_1d(
                         value_cache,
-                        prefill_meta.block_tables[context_prompt_idx, :past_block_num].unsqueeze(0),
-                        num_prefill_tokens
+                        prefill_meta.block_tables,
+                        attn_bias,
+                        p=0.0,
+                        scale=self.scale
                     )
-                    prompt_key = torch.cat((past_key.squeeze(0)[:context_len], prompt_key))
-                    prompt_value = torch.cat((past_value.squeeze(0)[:context_len], prompt_value))
-                    kv_shape = (batch_size, num_prefill_tokens + context_len, self.num_kv_heads, self.head_size)
-                out = ops.prompt_attention(
-                    prompt_query.view(query_shape),
-                    prompt_key.view(kv_shape),
-                    prompt_value.view(kv_shape),
-                    attn_bias=attn_bias,
-                    p=0.0,
-                    scale=self.scale,
-                )
+                else:
+                    out = ops.prompt_attention(
+                        prompt_query.view(query_shape),
+                        prompt_key.view(kv_shape),
+                        prompt_value.view(kv_shape),
+                        attn_bias=attn_bias,
+                        p=0.0,
+                        scale=self.scale,
+                    )
                 prompt_output = out.reshape(batch_size, -1, hidden_size)
             else:
                 # prefix-enabled attention
@@ -279,8 +272,13 @@ class HabanaAttentionImpl(AttentionImpl):
                     prefill_meta.max_query_len,
                     self.alibi_slopes,
                 )
+        else:
+            htorch.core.mark_step()
+            prompt_output = prompt_output.reshape(batch_size, -1, hidden_size)
         if decode_meta := attn_metadata.decode_metadata:
             # Decoding run.
+            decode_query = query[num_prefill_tokens:, :, :]
+
             decode_output = HabanaPagedAttention.forward_decode(
                 decode_query,
                 key_cache,
@@ -291,17 +289,15 @@ class HabanaAttentionImpl(AttentionImpl):
                 self.num_kv_heads,
                 self.scale,
                 self.alibi_slopes,
-                kv_scale
+                kv_scale,
             ).reshape(batch_size, -1, hidden_size)
+        else:
+            htorch.core.mark_step()
+            decode_output = decode_output.reshape(batch_size, -1, hidden_size)
 
         # Reshape the output tensor.
-        if prompt_output is not None and decode_output is not None:
-            return torch.concat((prompt_output, decode_output), dim=1)
-        elif prompt_output is not None:
-            return prompt_output
-        else:
-            assert decode_output is not None
-            return decode_output
+        output = torch.concat((prompt_output[:, :num_prefill_tokens, :], decode_output[:, :num_decode_tokens, :]), dim=1)
+        return output
 
 def _make_alibi_bias(
     alibi_slopes: torch.Tensor,
@@ -333,3 +329,7 @@ def _make_alibi_bias(
     if num_heads != num_kv_heads:
         bias = bias.unflatten(1, (num_kv_heads, num_heads // num_kv_heads))
     return bias
+
+def pad_to_bucket(target: torch.Tensor, bucket_size: torch.Tensor) -> torch.Tensor:
+    seq_bucket_len = ((target.size(0) + bucket_size - 1) // bucket_size) * bucket_size
+    return torch.nn.functional.pad(target, (0, 0, 0, 0, seq_bucket_len - target.size(0), 0), value=0)

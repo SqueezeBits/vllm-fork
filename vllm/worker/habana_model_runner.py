@@ -31,7 +31,7 @@ from vllm.model_executor.model_loader import get_model
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import SamplerOutput, SequenceData, SequenceGroupMetadata
 from vllm.utils import (HabanaMemoryProfiler, format_bytes,
-                        is_pin_memory_available, make_tensor_with_pad)
+                        is_pin_memory_available, make_tensor_with_pad, make_tensor_with_pad_1d)
 
 from .profiler import Profiler
 
@@ -131,7 +131,6 @@ class HpuModelAdapter():
         if prefill_metadata is None:
             return attn_metadata
         if not enable_1d_prefill:
-            seq_len = seq_len // batch_size
             seq_lens_t = prefill_metadata.seq_lens_tensor
             len_mask = (torch.arange(0, seq_len, device=device,
                                     dtype=torch.int32).view(1, seq_len).ge(
@@ -144,26 +143,11 @@ class HpuModelAdapter():
             mask = causal_mask.logical_or(len_mask)
             attn_bias = (torch.zeros_like(mask, dtype=dtype).masked_fill_(
                 mask, -math.inf))
+            prefill_metadata = prefill_metadata._replace(attn_bias=attn_bias)
             #FIXME: Restore sliding window support
             #if self.sliding_window is not None:
-        else:
-            # TODO(minkyu): benchmark overheads
-            prompt_lens_t = prefill_metadata.query_lens_tensor
-            context_lens_t = prefill_metadata.context_lens_tensor
-            assert seq_len == torch.sum(prompt_lens_t)
-            assert prompt_lens_t.size() == context_lens_t.size()
-            assert batch_size == 1
-            cur_masks = [torch.tril(torch.ones((size, size), device=device, dtype=torch.bool)) for size in prompt_lens_t]
-            past_masks = [torch.ones((q_len, past_kv_len), device=device, dtype=torch.bool) for q_len, past_kv_len in zip(prompt_lens_t, context_lens_t)]
-            masks_per_prompt = [torch.cat((past, cur), dim=1) for past, cur in zip(past_masks, cur_masks)]
-            mask = torch.block_diag(*masks_per_prompt)
-            attn_bias = (torch.zeros_like(mask, dtype=dtype)
-                            .masked_fill_(mask==0, torch.finfo(dtype).min)
-                            .view(1, 1, *mask.shape))
-        prefill_metadata = prefill_metadata._replace(attn_bias=attn_bias)
         attn_metadata = attn_metadata._replace(prefill_metadata=prefill_metadata)
         return attn_metadata
-
 
     def forward(self, *args, **kwargs):
         kwargs = kwargs.copy()
@@ -173,18 +157,27 @@ class HpuModelAdapter():
 
         enable_1d_prefill = kwargs.pop("enable_1d_prefill", False)
         input_ids = kwargs['input_ids']
-        
+
+        # These variables are required for chunked-prefill.
+        prefill_size = kwargs.pop("max_num_batched_tokens", 512)
+        decode_size = kwargs.pop("max_num_seqs", 256)
+
         attn_metadata = kwargs['attn_metadata']
         kwargs['attn_metadata'] = self._set_attn_bias(
             attn_metadata,
             input_ids.size(0),
-            attn_metadata.num_prefill_tokens,
+            input_ids.size(1) if not enable_1d_prefill else prefill_size,
             input_ids.device,
             torch.bfloat16,
             enable_1d_prefill=enable_1d_prefill,
         )
+        if enable_1d_prefill:
+            kwargs['attn_metadata'] = self.trim_attn_metadata_before_forward(kwargs['attn_metadata'])
+
         hidden_states = self.model(*args, **kwargs)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
+        if enable_1d_prefill:
+            return hidden_states
         hidden_states = hidden_states.index_select(0, selected_token_indices)
         return hidden_states
 
@@ -193,6 +186,28 @@ class HpuModelAdapter():
 
     def sample(self, *args, **kwargs):
         return self.model.sample(*args, **kwargs)
+    
+    def trim_attn_metadata_before_forward(self, metadata: AttentionMetadata):
+        # Some attributes are only used while setting attn_bias and not inside the model forward.
+        # To remove dynamicity in the metadata,
+        # trim the unused attributes before passing into the model.
+        prefill_metadata = subtuple(metadata.prefill_metadata,
+                                    'TrimmedPrefillModelMetadata',
+                                    ['block_tables',
+                                     'attn_bias',
+                                     'context_lens_tensor'])
+        decode_metadata = subtuple(metadata.decode_metadata,
+                                   'TrimmedDecodeModelMetadata',
+                                   ['block_tables',
+                                    'seq_lens_tensor',
+                                    ])
+        return subtuple(metadata,
+                        'TrimmedMetadata',
+                        ['slot_mapping',
+                         'num_prefill_tokens',
+                         'num_decode_tokens'],
+                        {'prefill_metadata': prefill_metadata,
+                         'decode_metadata': decode_metadata})
 
 
 class PreparePromptMetadata(NamedTuple):
@@ -677,7 +692,8 @@ class HabanaModelRunner:
                 if seq_group_metadata.block_tables is not None:
                     # Prefill has chunked before.
                     block_table = seq_group_metadata.block_tables[seq_id]
-                    prefix_block_tables.append(block_table)
+                    # TODO(minkyu): shouldn't we use computed_block_nums for this? 
+                    prefix_block_tables.append(block_table[:(context_len - 1) // self.block_size + 1])
                 else:
                     # The first prefill.
                     prefix_block_tables.append([])
@@ -746,7 +762,7 @@ class HabanaModelRunner:
         max_seq_len = max(seq_lens)
         assert max_query_len > 0
 
-        context_lens_tensor = torch.tensor(context_lens,
+        context_lens_tensor = torch.tensor(context_lens[0],
                                            dtype=torch.int,
                                            device=self.device)
 
@@ -759,43 +775,60 @@ class HabanaModelRunner:
         else:
             multi_modal_input = None
 
-        max_prompt_block_table_len = max(len(t) for t in prefix_block_tables)
+        # max_prompt_block_table_len = max(len(t) for t in prefix_block_tables)
         # max_prompt_len = max(find_bucket(max(seq_lens), self.prompt_seq_bucket_cfg), self.block_size)
 
-        block_tables = make_tensor_with_pad(prefix_block_tables,
-                                            max_len=max_prompt_block_table_len,
-                                            pad=0,
-                                            dtype=torch.int,
-                                            device=self.device)
+        # TODO(minkyu): reconsider using prefix_block_tables, we might need this for prefix caching
+        # block_tables = make_tensor_with_pad(prefix_block_tables,
+        #                                     max_len=max_prompt_block_table_len,
+        #                                     pad=0,
+        #                                     dtype=torch.int,
+        #                                     device=self.device)
+        block_tables = torch.tensor([prefix_block_tables[0]], dtype=torch.int, device=self.device)
 
         # Query length can be shorter than key (i.e., prompt) when prefill
         # is chunked or prefix cached.
-        query_lens_tensor = torch.tensor(query_lens,
+        query_lens_tensor = torch.tensor(query_lens[0],
                                          dtype=torch.long,
-                                         device=self.device)
-        subquery_start_loc = torch.zeros(query_lens_tensor.shape[0] + 1,
-                                         dtype=torch.int32,
                                          device=self.device)
         seq_lens_tensor = torch.tensor(seq_lens,
                                        dtype=torch.int,
                                        device=self.device)
-        seq_start_loc = torch.zeros(seq_lens_tensor.shape[0] + 1,
-                                    dtype=torch.int32,
-                                    device=self.device)
 
-        input_tokens = torch.tensor(input_tokens,
-                                        dtype=torch.long,
-                                        device=self.device)
-        input_positions = torch.tensor(input_positions,
-                                        dtype=torch.long,
-                                        device=self.device)
-        slot_mapping = torch.tensor(slot_mapping,
-                                        dtype=torch.long,
-                                        device=self.device)
+        input_tokens = make_tensor_with_pad_1d(input_tokens,
+                                            self.scheduler_config.max_num_batched_tokens,
+                                            pad=0,
+                                            dtype=torch.long,
+                                            device=self.device)
+        input_positions = make_tensor_with_pad_1d(input_positions,
+                                                  self.scheduler_config.max_num_batched_tokens,
+                                                  pad=0,
+                                                  dtype=torch.long,
+                                                  device=self.device)
+        slot_mapping = make_tensor_with_pad_1d(slot_mapping,
+                                               self.scheduler_config.max_num_batched_tokens,
+                                               pad=0,
+                                               dtype=torch.long,
+                                               device=self.device)
 
-        input_tokens = torch.unsqueeze(input_tokens, 0)
-        input_positions = torch.unsqueeze(input_positions, 0)
-        slot_mapping = torch.unsqueeze(slot_mapping, 0)
+        # NOTE: Make attn_bias on cpu,
+        # because it causes re-compilation on hpu.
+        context_len = context_lens[0]
+        num_blocks = (context_len - 1) // self.block_size + 1
+        past_attn_mask = torch.arange(0, num_blocks * self.block_size, dtype=torch.int32, device="cpu")
+        past_attn_mask = past_attn_mask.ge(context_len)
+        past_attn_mask = past_attn_mask.view(1, -1)
+        past_attn_mask = past_attn_mask.expand(self.scheduler_config.max_num_batched_tokens, -1).clone()
+        past_attn_mask[query_lens[0]:,:] = 1
+
+        masks_per_prompt = [torch.ones((size, size), device="cpu", dtype=torch.bool) for size in query_lens]
+        prefill_pad_len = self.scheduler_config.max_num_batched_tokens - sum_query_len
+        masks_per_prompt.append(torch.zeros((prefill_pad_len, prefill_pad_len), device="cpu", dtype=torch.bool))
+        cur_mask = torch.tril(torch.block_diag(*masks_per_prompt))
+        cur_mask = (cur_mask == 0)
+        mask = torch.concat((past_attn_mask, cur_mask), dim=-1)
+
+        attn_bias = torch.zeros_like(mask, dtype=torch.bfloat16).masked_fill_(mask, torch.finfo(torch.bfloat16).min).view(1, 1, *mask.shape).to("hpu")
 
         attn_metadata = self.attn_backend.make_metadata(
             is_prompt=True,
@@ -803,8 +836,8 @@ class HabanaModelRunner:
             seq_lens_tensor=seq_lens_tensor,
             max_query_len=max_query_len,
             max_seq_len=max_seq_len,
-            subquery_start_loc=subquery_start_loc,
-            seq_start_loc=seq_start_loc,
+            subquery_start_loc=None,
+            seq_start_loc=None,
             context_lens_tensor=context_lens_tensor,
             block_tables=block_tables,
             use_cuda_graph=False,
@@ -813,6 +846,7 @@ class HabanaModelRunner:
             num_prefill_tokens=sum_query_len,
             num_decode_tokens=0,
         )
+        attn_metadata.attn_bias = attn_bias
         return PreparePromptMetadata(
             input_tokens=input_tokens,
             input_positions=input_positions,
@@ -884,34 +918,61 @@ class HabanaModelRunner:
                 block_tables.append(block_table)
         
         # convert inputs to tensor for HPU compatibility
-        input_tokens = torch.tensor(input_tokens,
-                                    dtype=torch.long,
-                                    device=self.device)
-        input_positions = torch.tensor(input_positions,
-                                       dtype=torch.long,
-                                       device=self.device)
-        slot_mapping = torch.tensor(slot_mapping,
-                                    dtype=torch.long,
-                                    device=self.device)
-        if chunked_prefill_enabled:
-            input_tokens = input_tokens.reshape(1, -1)
-            input_positions = input_positions.reshape(1, -1)
-            slot_mapping = slot_mapping.reshape(1, -1)
-        
-        seq_lens_tensor = torch.tensor(seq_lens,
+        if not chunked_prefill_enabled:
+            input_tokens = torch.tensor(input_tokens,
+                                        dtype=torch.long,
+                                        device=self.device)
+            input_positions = torch.tensor(input_positions,
+                                        dtype=torch.long,
+                                        device=self.device)
+            slot_mapping = torch.tensor(slot_mapping,
+                                        dtype=torch.long,
+                                        device=self.device)
+            seq_lens_tensor = torch.tensor(seq_lens,
                                        dtype=torch.int,
                                        device=self.device)
+            max_block_table_len = max(
+                len(block_table) for block_table in block_tables)
+            block_tables = make_tensor_with_pad(
+                block_tables,
+                max_len=max_block_table_len,
+                pad=0,
+                dtype=torch.int,
+                device=self.device,
+            )
+        else:
+            input_tokens = make_tensor_with_pad_1d([input_token[0] for input_token in input_tokens],
+                                               self.scheduler_config.max_num_seqs,
+                                               pad=0,
+                                               dtype=torch.long,
+                                               device=self.device)
+            input_positions = make_tensor_with_pad_1d([input_position[0] for input_position in input_positions],
+                                                      self.scheduler_config.max_num_seqs,
+                                                      pad=0,
+                                                      dtype=torch.long,
+                                                      device=self.device)
+            slot_mapping = make_tensor_with_pad_1d([slot[0] for slot in slot_mapping],
+                                                    self.scheduler_config.max_num_seqs,
+                                                    pad=0,
+                                                    dtype=torch.long,
+                                                    device=self.device)
+            seq_lens_tensor = make_tensor_with_pad_1d(seq_lens,
+                                                      self.scheduler_config.max_num_seqs,
+                                                      pad=torch.iinfo(torch.int).max,
+                                                      dtype=torch.int,
+                                                      device=self.device)
+            max_block_table_len = max(
+                len(block_table) for block_table in block_tables)
+            block_tables_padding = [[0] * max_block_table_len] * (self.scheduler_config.max_num_seqs - len(block_tables))
+            block_tables = make_tensor_with_pad(
+                block_tables + block_tables_padding,
+                max_len=max_block_table_len,
+                pad=0,
+                dtype=torch.int,
+                device=self.device,
+            )
+
         num_decode_tokens = sum(seq_lens)
-        max_block_table_len = max(
-            len(block_table) for block_table in block_tables)
-        block_tables = make_tensor_with_pad(
-            block_tables,
-            max_len=max_block_table_len,
-            pad=0,
-            dtype=torch.int,
-            device=self.device,
-        )
-        
         attn_metadata = self.attn_backend.make_metadata(
             is_prompt=False,
             seq_lens=None,
@@ -977,10 +1038,10 @@ class HabanaModelRunner:
                 decode_lora_requests,
                 decode_slot_mapping,
             ) = self._prepare_decode(decode_reqs, chunked_prefill_enabled)
-                        
+
             sampling_metadata = SamplingMetadata.prepare(
                 seq_group_metadata_list, seq_lens, query_lens, self.device,
-                self.pin_memory)
+                self.pin_memory, self.scheduler_config)
 
             if not chunked_prefill_enabled:
                 # currently HPU does not support mixed batches when chunked prefill is disabled
@@ -1019,6 +1080,19 @@ class HabanaModelRunner:
                     sampling_metadata.selected_token_indices.add_(paddings)
             else:
                 # TODO(huijong): restore lora functionality
+                if prefill_attn_metadata is None:
+                    prefill_size = self.scheduler_config.max_num_batched_tokens
+                    input_tokens = torch.zeros((1, prefill_size), device=input_tokens.device, dtype=input_tokens.dtype)
+                    input_positions = torch.zeros((1, prefill_size), device=input_positions.device, dtype=input_positions.dtype)
+                    slot_mapping = torch.zeros((1, prefill_size), device=slot_mapping.device, dtype=slot_mapping.dtype)
+                    num_prefill_tokens = prefill_size
+                if decode_attn_metadata is None:
+                    decode_size = self.scheduler_config.max_num_seqs
+                    decode_input_tokens = torch.zeros((1, decode_size), device=decode_input_tokens.device, dtype=decode_input_tokens.dtype)
+                    decode_input_positions = torch.zeros((1, decode_size), device=decode_input_positions.device, dtype=decode_input_positions.dtype)
+                    decode_slot_mapping = torch.zeros((1, decode_size), device=decode_slot_mapping.device, dtype=decode_slot_mapping.dtype)
+                    num_decode_tokens = decode_size
+
                 input_tokens = torch.concat((input_tokens, decode_input_tokens), dim=-1)
                 input_positions = torch.concat((input_positions, decode_input_positions), dim=-1)
                 slot_mapping = torch.concat((slot_mapping, decode_slot_mapping), dim=-1)
@@ -1104,8 +1178,8 @@ class HabanaModelRunner:
         attn_metadata = AttentionMetadata(
             num_prefills=num_prefills,
             slot_mapping=slot_mapping,
-            num_prefill_tokens=num_prefill_tokens,
-            num_decode_tokens=num_decode_tokens,
+            num_prefill_tokens=torch.tensor(num_prefill_tokens, device=input_tokens.device),
+            num_decode_tokens=torch.tensor(num_decode_tokens, device=input_tokens.device),
             prefill_metadata=prefill_attn_metadata,
             decode_metadata=decode_attn_metadata,
         )
@@ -1156,7 +1230,8 @@ class HabanaModelRunner:
         return subtuple(metadata,
                         'TrimmedMetadata',
                         ['slot_mapping',
-                         'num_prefill_tokens'],
+                         'num_prefill_tokens',
+                         'num_decode_tokens'],
                         {'prefill_metadata': prefill_metadata,
                          'decode_metadata': decode_metadata})
 
@@ -1224,12 +1299,14 @@ class HabanaModelRunner:
             hidden_states = self.model.forward(
                 
                 **execute_model_kwargs,
-               
+            
                 selected_token_indices=sampling_metadata.
                 selected_token_indices,
-               
+            
                 bypass_hpu_graphs=not use_graphs,
                 enable_1d_prefill=self.scheduler_config.enable_1d_prefill,
+                max_num_batched_tokens=self.scheduler_config.max_num_batched_tokens,
+                max_num_seqs=self.scheduler_config.max_num_seqs,
             )
 
         # Compute the logits.
@@ -1238,6 +1315,7 @@ class HabanaModelRunner:
                              f'{"prompt" if is_prompt else "decode"}_bs'
                              f'{batch_size}_'
                              f'seq{seq_len}')):
+            selected_token_indices = sampling_metadata.selected_token_indices
             sampling_metadata.selected_token_indices = None
             logits = self.model.compute_logits(hidden_states,
                                                sampling_metadata)
@@ -1253,6 +1331,8 @@ class HabanaModelRunner:
                              f'{"prompt" if is_prompt else "decode"}_'
                              f'bs{batch_size}_'
                              f'seq{seq_len}')):
+            if self.scheduler_config.enable_1d_prefill:
+                logits = logits.index_select(0, selected_token_indices)
             output = self.model.sample(
                 logits=logits,
                 sampling_metadata=sampling_metadata,

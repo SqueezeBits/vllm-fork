@@ -107,6 +107,7 @@ class SamplingMetadata:
         query_lens: Optional[List[int]],
         device: str,
         pin_memory: bool,
+        scheduler_config = None,
     ) -> "SamplingMetadata":
         (
             seq_groups,
@@ -114,7 +115,7 @@ class SamplingMetadata:
             categorized_sample_indices,
             num_prompts,
         ) = _prepare_seq_groups(seq_group_metadata_list, seq_lens, query_lens,
-                                device)
+                                device, scheduler_config)
         selected_token_indices = async_tensor_h2d(selected_token_indices,
                                                   dtype=torch.long,
                                                   target_device=device,
@@ -149,6 +150,7 @@ def _prepare_seq_groups(
     seq_lens: List[int],
     query_lens: Optional[List[int]],
     device: str,
+    scheduler_config = None,
 ) -> Tuple[List[SequenceGroupToSample], List[int], Dict[
         SamplingType, List[Tuple[int, int]]], int]:
     """Prepare sequence groups and indices for sampling.
@@ -175,6 +177,10 @@ def _prepare_seq_groups(
     selected_token_indices: List[int] = []
     # Used for selected_token_indices.
     model_output_idx = 0
+    if scheduler_config and scheduler_config.chunked_prefill_enabled:
+        prompt_padding = scheduler_config.max_num_batched_tokens - sum(query_lens)
+    else:
+        prompt_padding = 0
 
     # Sampling type -> (
     # indices to sample/prompt logprob within pruned output logits,
@@ -238,8 +244,12 @@ def _prepare_seq_groups(
                 range(model_output_idx, model_output_idx + prompt_logprob_len))
         model_output_idx += prompt_logprob_len
         if do_sample:
-            selected_token_indices.extend(
-                range(model_output_idx, model_output_idx + sample_len))
+            if is_prompt:
+                selected_token_indices.extend(
+                    range(model_output_idx, model_output_idx + sample_len))
+            else:
+                selected_token_indices.extend(
+                    range(model_output_idx + prompt_padding, model_output_idx + prompt_padding + sample_len))
         model_output_idx += sample_len
 
         # We now find indices for logprob computation and sampling.

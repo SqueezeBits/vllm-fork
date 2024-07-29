@@ -130,17 +130,17 @@ class HpuRotaryEmbedding(nn.Module):
         if positions.dim() == 1:
             positions = positions.unsqueeze(0)
         
-        max_position = torch.max(positions).item()
+        max_position = torch.max(positions)
         if max_position > self.max_seq_len_cached:
             self._set_cos_sin_cache(seq_len=max_position, device=query.device, dtype=query.dtype)
 
-        cos, sin = self.cos_cached[:max_position + 1].to(dtype=query.dtype), self.sin_cached[:max_position + 1].to(dtype=query.dtype)
+        cos, sin = self.cos_cached, self.sin_cached
         query = query.reshape((query.shape[0], query.shape[1], query.shape[2] // self.head_size, self.head_size))
         key = key.reshape((key.shape[0], key.shape[1], key.shape[2] // self.head_size, self.head_size))
         if query.device.type == "hpu" and FusedRoPE:
             cos = cos[positions].unsqueeze(2).to(query.dtype)
             sin = sin[positions].unsqueeze(2).to(query.dtype)
-                
+
             query, key = FusedRoPE.apply(query, cos, sin, 0), FusedRoPE.apply(key, cos, sin, 0)
         else:
             query, key = apply_rotary_pos_emb(query, key, cos, sin, positions)

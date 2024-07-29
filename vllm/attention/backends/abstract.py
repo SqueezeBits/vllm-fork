@@ -62,12 +62,12 @@ class AttentionMetadataPerStage:
     # Not that this class is required for chunked-prefill
     
     # Total number of prefill requests.
-    num_prefills: int
+    num_prefills: torch.Tensor
     # Number of prefill tokens.
-    num_prefill_tokens: int
+    num_prefill_tokens: torch.Tensor
     # Number of decode tokens. Note that it is equivalent to the number of
     # decode requests.
-    num_decode_tokens: int
+    num_decode_tokens: torch.Tensor
 
     def asdict_zerocopy(self,
                         skip_fields: Optional[Set[str]] = None
@@ -88,12 +88,12 @@ T = TypeVar("T", bound=AttentionMetadataPerStage)
 class AttentionMetadata(Generic[T]):
     """Attention metadata for prefill and decode batched together."""
     # Total number of prefill requests.
-    num_prefills: int
+    num_prefills: torch.Tensor
     # Number of prefill tokens.
-    num_prefill_tokens: int
+    num_prefill_tokens: torch.Tensor
     # Number of decode tokens. Note that it is equivalent to the number of
     # decode requests.
-    num_decode_tokens: int
+    num_decode_tokens: torch.Tensor
     # (num_tokens,). The indices of the token slots that input tokens will be
     # stored into. E.g., if `slot_mapping` is [35, 2, 17] and the block size
     # is 16, the three tokens are stored in the 3rd slot in block 2, 2nd slot
