@@ -175,11 +175,9 @@ class HpuModelAdapter():
             kwargs['attn_metadata'] = self.trim_attn_metadata_before_forward(kwargs['attn_metadata'])
 
         hidden_states = self.model(*args, **kwargs)
-        if enable_1d_prefill:
-            # Split graph to group below index_selct with logit_processor
-            # as they have the same dynamicity according to selected_token_indices.
-            htorch.core.mark_step()
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
+        if enable_1d_prefill:
+            return hidden_states
         hidden_states = hidden_states.index_select(0, selected_token_indices)
         return hidden_states
 
@@ -1317,6 +1315,7 @@ class HabanaModelRunner:
                              f'{"prompt" if is_prompt else "decode"}_bs'
                              f'{batch_size}_'
                              f'seq{seq_len}')):
+            selected_token_indices = sampling_metadata.selected_token_indices
             sampling_metadata.selected_token_indices = None
             logits = self.model.compute_logits(hidden_states,
                                                sampling_metadata)
@@ -1332,6 +1331,8 @@ class HabanaModelRunner:
                              f'{"prompt" if is_prompt else "decode"}_'
                              f'bs{batch_size}_'
                              f'seq{seq_len}')):
+            if self.scheduler_config.enable_1d_prefill:
+                logits = logits.index_select(0, selected_token_indices)
             output = self.model.sample(
                 logits=logits,
                 sampling_metadata=sampling_metadata,
