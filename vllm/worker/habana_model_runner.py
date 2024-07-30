@@ -639,6 +639,7 @@ class HabanaModelRunner:
     def _prepare_prompt_1d(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
+        num_decode_seqs: int,
     ) -> PreparePromptMetadata:
         input_tokens: List[int] | torch.Tensor= []
         input_positions: List[int] | torch.Tensor= []
@@ -794,19 +795,20 @@ class HabanaModelRunner:
         seq_lens_tensor = torch.tensor(seq_lens,
                                        dtype=torch.int,
                                        device=self.device)
-
+        
+        max_len = self.scheduler_config.max_num_batched_tokens if num_decode_seqs == 0 else len(input_tokens)
         input_tokens = make_tensor_with_pad_1d(input_tokens,
-                                            self.scheduler_config.max_num_batched_tokens,
+                                            max_len,
                                             pad=0,
                                             dtype=torch.long,
                                             device=self.device)
         input_positions = make_tensor_with_pad_1d(input_positions,
-                                                  self.scheduler_config.max_num_batched_tokens,
+                                                  max_len,
                                                   pad=0,
                                                   dtype=torch.long,
                                                   device=self.device)
         slot_mapping = make_tensor_with_pad_1d(slot_mapping,
-                                               self.scheduler_config.max_num_batched_tokens,
+                                               max_len,
                                                pad=0,
                                                dtype=torch.long,
                                                device=self.device)
@@ -820,7 +822,6 @@ class HabanaModelRunner:
         past_attn_mask = past_attn_mask.view(1, -1)
         past_attn_mask = past_attn_mask.expand(self.scheduler_config.max_num_batched_tokens, -1).clone()
         past_attn_mask[query_lens[0]:,:] = 1
-
         masks_per_prompt = [torch.ones((size, size), device="cpu", dtype=torch.bool) for size in query_lens]
         prefill_pad_len = self.scheduler_config.max_num_batched_tokens - sum_query_len
         masks_per_prompt.append(torch.zeros((prefill_pad_len, prefill_pad_len), device="cpu", dtype=torch.bool))
@@ -864,7 +865,8 @@ class HabanaModelRunner:
     def _prepare_decode(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
-        chunked_prefill_enabled: bool = False
+        chunked_prefill_enabled: bool = False,
+        num_prefill_tokens: int  = 0,
     ) -> PrepareDecodeMetadata: 
         input_tokens: List[List[int]] | torch.Tensor = []
         input_positions: List[List[int]] | torch.Tensor = []
@@ -943,17 +945,17 @@ class HabanaModelRunner:
             )
         else:
             input_tokens = make_tensor_with_pad_1d([input_token[0] for input_token in input_tokens],
-                                               self.scheduler_config.max_num_seqs,
+                                               self.scheduler_config.max_num_batched_tokens - num_prefill_tokens,
                                                pad=0,
                                                dtype=torch.long,
                                                device=self.device)
             input_positions = make_tensor_with_pad_1d([input_position[0] for input_position in input_positions],
-                                                      self.scheduler_config.max_num_seqs,
+                                                      self.scheduler_config.max_num_batched_tokens - num_prefill_tokens,
                                                       pad=0,
                                                       dtype=torch.long,
                                                       device=self.device)
             slot_mapping = make_tensor_with_pad_1d([slot[0] for slot in slot_mapping],
-                                                    self.scheduler_config.max_num_seqs,
+                                                    self.scheduler_config.max_num_batched_tokens - num_prefill_tokens,
                                                     pad=0,
                                                     dtype=torch.long,
                                                     device=self.device)
@@ -973,7 +975,7 @@ class HabanaModelRunner:
                 device=self.device,
             )
 
-        num_decode_tokens = sum(seq_lens)
+        num_decode_tokens = len(seq_lens)
         attn_metadata = self.attn_backend.make_metadata(
             is_prompt=False,
             seq_lens=None,
@@ -1029,7 +1031,7 @@ class HabanaModelRunner:
                 lora_requests,
                 multi_modal_input,
                 slot_mapping,
-            ) = self._prepare_prompt(prefill_reqs) if not enable_1d_prefill else self._prepare_prompt_1d(prefill_reqs)
+            ) = self._prepare_prompt(prefill_reqs) if not enable_1d_prefill else self._prepare_prompt_1d(prefill_reqs, len(decode_reqs))
             (
                 decode_input_tokens,
                 decode_input_positions,
@@ -1038,11 +1040,10 @@ class HabanaModelRunner:
                 decode_lora_prompt_mapping,
                 decode_lora_requests,
                 decode_slot_mapping,
-            ) = self._prepare_decode(decode_reqs, chunked_prefill_enabled)
+            ) = self._prepare_decode(decode_reqs, chunked_prefill_enabled, input_tokens.nelement())
 
             sampling_metadata = SamplingMetadata.prepare(
-                seq_group_metadata_list, seq_lens, query_lens, self.device,
-                self.pin_memory, self.scheduler_config)
+                seq_group_metadata_list, seq_lens, query_lens, self.device, self.pin_memory)
 
             if not chunked_prefill_enabled:
                 # currently HPU does not support mixed batches when chunked prefill is disabled
@@ -1050,8 +1051,7 @@ class HabanaModelRunner:
 
             num_prefills = len(seq_lens)
             num_prefill_tokens = input_tokens.nelement()
-            num_decode_tokens = decode_input_tokens.nelement()
-                        
+            num_decode_tokens = decode_attn_metadata.num_decode_tokens if decode_attn_metadata else 0
             if not chunked_prefill_enabled:
                 # NOTE(kzawora): Here we diverge from GPU code - we don't
                 # support mixed batches, so we either use decode or prefill
@@ -1081,19 +1081,18 @@ class HabanaModelRunner:
                     sampling_metadata.selected_token_indices.add_(paddings)
             else:
                 # TODO(huijong): restore lora functionality
-                if prefill_attn_metadata is None:
-                    prefill_size = self.scheduler_config.max_num_batched_tokens
-                    input_tokens = torch.zeros((1, prefill_size), device=input_tokens.device, dtype=input_tokens.dtype)
-                    input_positions = torch.zeros((1, prefill_size), device=input_positions.device, dtype=input_positions.dtype)
-                    slot_mapping = torch.zeros((1, prefill_size), device=slot_mapping.device, dtype=slot_mapping.dtype)
-                    num_prefill_tokens = prefill_size
-                if decode_attn_metadata is None:
-                    decode_size = self.scheduler_config.max_num_seqs
-                    decode_input_tokens = torch.zeros((1, decode_size), device=decode_input_tokens.device, dtype=decode_input_tokens.dtype)
-                    decode_input_positions = torch.zeros((1, decode_size), device=decode_input_positions.device, dtype=decode_input_positions.dtype)
-                    decode_slot_mapping = torch.zeros((1, decode_size), device=decode_slot_mapping.device, dtype=decode_slot_mapping.dtype)
-                    num_decode_tokens = decode_size
-
+                # if prefill_attn_metadata is None:
+                #     prefill_size = self.scheduler_config.max_num_batched_tokens
+                #     input_tokens = torch.zeros((1, prefill_size), device=input_tokens.device, dtype=input_tokens.dtype)
+                #     input_positions = torch.zeros((1, prefill_size), device=input_positions.device, dtype=input_positions.dtype)
+                #     slot_mapping = torch.zeros((1, prefill_size), device=slot_mapping.device, dtype=slot_mapping.dtype)
+                #     num_prefill_tokens = prefill_size
+                # if decode_attn_metadata is None:
+                #     decode_size = self.scheduler_config.max_num_seqs
+                #     decode_input_tokens = torch.zeros((1, decode_size), device=decode_input_tokens.device, dtype=decode_input_tokens.dtype)
+                #     decode_input_positions = torch.zeros((1, decode_size), device=decode_input_positions.device, dtype=decode_input_positions.dtype)
+                #     decode_slot_mapping = torch.zeros((1, decode_size), device=decode_slot_mapping.device, dtype=decode_slot_mapping.dtype)
+                #     num_decode_tokens = decode_size
                 input_tokens = torch.concat((input_tokens, decode_input_tokens), dim=-1)
                 input_positions = torch.concat((input_positions, decode_input_positions), dim=-1)
                 slot_mapping = torch.concat((slot_mapping, decode_slot_mapping), dim=-1)
