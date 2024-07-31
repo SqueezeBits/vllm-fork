@@ -829,7 +829,7 @@ class HabanaModelRunner:
         mask = torch.concat((past_attn_mask, cur_mask), dim=-1)
 
         dtype = self.model_config.dtype
-        attn_bias = torch.zeros_like(mask, dtype=dtype).masked_fill_(mask, -math.inf).view(1, 1, *mask.shape).to("hpu")
+        attn_bias = torch.zeros_like(mask, dtype=dtype).masked_fill_(mask, torch.finfo(dtype).min).view(1, 1, *mask.shape).to("hpu")
 
         attn_metadata = self.attn_backend.make_metadata(
             is_prompt=True,
