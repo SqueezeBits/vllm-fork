@@ -118,6 +118,7 @@ def run_vllm(
     use_text_input: Optional[bool] = False,
     print_outputs: Optional[bool] = False,
     enable_1d_prefill: Optional[bool] = False,
+    max_num_seqs: int = 256,
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -142,6 +143,7 @@ def run_vllm(
         load_format=load_format,
         enable_piggybacking=enable_piggybacking,
         enable_1d_prefill=enable_1d_prefill,
+        max_num_seqs=max_num_seqs,
     )
 
     # Add the requests to the engine.
@@ -278,7 +280,7 @@ def main(args: argparse.Namespace):
             args.enable_prefix_caching, args.enable_chunked_prefill,
             args.max_num_batched_tokens, args.distributed_executor_backend,
             args.gpu_memory_utilization, args.download_dir, args.load_format, args.enable_piggybacking, 
-            args.use_text_input, args.print_outputs, args.enable_1d_prefill)
+            args.use_text_input, args.print_outputs, args.enable_1d_prefill, args.max_num_seqs)
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
         elapsed_time = run_hf(requests, args.model, tokenizer, args.n,
@@ -423,6 +425,11 @@ if __name__ == "__main__":
                         type=int,
                         default=None,
                         help='maximum number of batched tokens per '
+                        'iteration')
+    parser.add_argument('--max-num-seqs',
+                        type=int,
+                        default=256,
+                        help='maximum number of sequences per '
                         'iteration')
     parser.add_argument('--download-dir',
                         type=str,

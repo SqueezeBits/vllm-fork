@@ -1,130 +1,46 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/source/assets/logos/vllm-logo-text-dark.png">
-    <img alt="vLLM" src="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/source/assets/logos/vllm-logo-text-light.png" width=55%>
-  </picture>
-</p>
+# vLLM with Chunked Prefill for Gaudi® 2 AI Accelerators
 
-<h3 align="center">
-Easy, fast, and cheap LLM serving for everyone
-</h3>
+## About Chunked Prefill
+[[paper](https://arxiv.org/pdf/2308.16369)] | [[github](https://github.com/vllm-project/vllm/issues/3130)]
 
-<p align="center">
-| <a href="README_GAUDI.md"><b>Intel® Gaudi® README</b></a> | <a href="https://docs.vllm.ai"><b>Documentation</b></a> | <a href="https://vllm.ai"><b>Blog</b></a> | <a href="https://arxiv.org/abs/2309.06180"><b>Paper</b></a> | <a href="https://discord.gg/jz7wjKhh6g"><b>Discord</b></a> |
+Chunked-prefill with piggybacking was introduced in **SARATHI: Efficient LLM Inference by Piggybacking Decodes with Chunked Prefills**. It employs *prefill-chunking*, which splits a prefill request into
+equal sized chunks, and *piggybacking*, which constructs a batch using a single prefill chunk and populates the
+remaining slots with decodes. Since prefill requests are compute-bound and decoding requests are memory-bound, it can improve efficiency by balancing between the two.
 
-</p>
+## Benefits on Gaudi® 2
+### Possible advantages
+- Reduced the number of traced graphs, allowing more memory for KV cache and fewer preemptions, which can lead to larger batch size and longer sequences.
+- Improved decoding throughput by piggybacking decoding tokens.
 
----
+### Possible disadvantages
+- Increased number of graph launches per single input sequence.
+- Attention overhead due to piggybacking.
 
-**Ray Summit CPF is Open (June 4th to June 20th)!**
-
-There will be a track for vLLM at the Ray Summit (09/30-10/02, SF) this year!
-If you have cool projects related to vLLM or LLM inference, we would love to see your proposals.
-This will be a great chance for everyone in the community to get together and learn.
-Please submit your proposal [here](https://raysummit.anyscale.com/flow/anyscale/raysummit2024/landing/page/eventsite)
-
----
-
-*Latest News* 🔥
-- [2024/06] We hosted [the fourth vLLM meetup](https://lu.ma/agivllm) with Cloudflare and BentoML! Please find the meetup slides [here](https://docs.google.com/presentation/d/1iJ8o7V2bQEi0BFEljLTwc5G1S10_Rhv3beed5oB0NJ4/edit?usp=sharing).
-- [2024/05] <b>vLLM-fork specific:</b> Added Intel® Gaudi® 2 support with SynapseAI 1.16.0. For more information, please refer to <a href="README_GAUDI.md"><b>Intel® Gaudi® README</b></a>.
-- [2024/04] We hosted [the third vLLM meetup](https://robloxandvllmmeetup2024.splashthat.com/) with Roblox! Please find the meetup slides [here](https://docs.google.com/presentation/d/1A--47JAK4BJ39t954HyTkvtfwn0fkqtsL8NGFuslReM/edit?usp=sharing).
-- [2024/01] We hosted [the second vLLM meetup](https://lu.ma/ygxbpzhl) in SF! Please find the meetup slides [here](https://docs.google.com/presentation/d/12mI2sKABnUw5RBWXDYY-HtHth4iMSNcEoQ10jDQbxgA/edit?usp=sharing).
-- [2024/01] Added ROCm 6.0 support to vLLM.
-- [2023/12] Added ROCm 5.7 support to vLLM.
-- [2023/10] We hosted [the first vLLM meetup](https://lu.ma/first-vllm-meetup) in SF! Please find the meetup slides [here](https://docs.google.com/presentation/d/1QL-XPFXiFpDBh86DbEegFXBXFXjix4v032GhShbKf3s/edit?usp=sharing).
-- [2023/09] We created our [Discord server](https://discord.gg/jz7wjKhh6g)! Join us to discuss vLLM and LLM serving! We will also post the latest announcements and updates there.
-- [2023/09] We released our [PagedAttention paper](https://arxiv.org/abs/2309.06180) on arXiv!
-- [2023/08] We would like to express our sincere gratitude to [Andreessen Horowitz](https://a16z.com/2023/08/30/supporting-the-open-source-ai-community/) (a16z) for providing a generous grant to support the open-source development and research of vLLM.
-- [2023/07] Added support for LLaMA-2! You can run and serve 7B/13B/70B LLaMA-2s on vLLM with a single command!
-- [2023/06] Serving vLLM On any Cloud with SkyPilot. Check out a 1-click [example](https://github.com/skypilot-org/skypilot/blob/master/llm/vllm) to start the vLLM demo, and the [blog post](https://blog.skypilot.co/serving-llm-24x-faster-on-the-cloud-with-vllm-and-skypilot/) for the story behind vLLM development on the clouds.
-- [2023/06] We officially released vLLM! FastChat-vLLM integration has powered [LMSYS Vicuna and Chatbot Arena](https://chat.lmsys.org) since mid-April. Check out our [blog post](https://vllm.ai).
-
----
-## About
-vLLM is a fast and easy-to-use library for LLM inference and serving.
-
-vLLM is fast with:
-
-- State-of-the-art serving throughput
-- Efficient management of attention key and value memory with **PagedAttention**
-- Continuous batching of incoming requests
-- Fast model execution with CUDA/HIP graph
-- Quantization: [GPTQ](https://arxiv.org/abs/2210.17323), [AWQ](https://arxiv.org/abs/2306.00978), [SqueezeLLM](https://arxiv.org/abs/2306.07629), FP8 KV Cache
-- Optimized CUDA kernels
-
-vLLM is flexible and easy to use with:
-
-- Seamless integration with popular Hugging Face models
-- High-throughput serving with various decoding algorithms, including *parallel sampling*, *beam search*, and more
-- Tensor parallelism support for distributed inference
-- Streaming outputs
-- OpenAI-compatible API server
-- Support NVIDIA GPUs, AMD GPUs, Intel CPUs and GPUs
-- (Experimental) Prefix caching support
-- (Experimental) Multi-lora support
-
-vLLM seamlessly supports most popular open-source models on HuggingFace, including:
-- Transformer-like LLMs (e.g., Llama)
-- Mixture-of-Expert LLMs (e.g., Mixtral)
-- Multi-modal LLMs (e.g., LLaVA)
-
-Find the full list of supported models [here](https://docs.vllm.ai/en/latest/models/supported_models.html).
-
-## Getting Started
-
-Install vLLM with pip or [from source](https://vllm.readthedocs.io/en/latest/getting_started/installation.html#build-from-source):
-
+## Usage
+Both prefill chunking and piggybacking can be enabled with the `enable_chunked_prefill` parameter when initializing an `LLM` instance.
+```python
+llm = LLM(
+        model=model,
+        ...
+        enable_chunked_prefill=True,
+        ...
+    )
+```
+For benchmarks, it is included in [benchmark_throughput.py](./benchmarks/benchmark_throughput.py) script.
+- Example command for running with 1024 fixed-length inputs of 8K and outputs of 1K
 ```bash
-pip install vllm
+python benchmarks/benchmark_throughput.py --model /models/Meta-Llama-3-8B-Instruct/ --trust-remote-code --enforce-eager --num-prompts 1024  --input-len 8192 --output-len 1024 --max-num-batched-tokens 4096 --max-num-seqs 128 --enable-chunked-prefill
 ```
 
-Visit our [documentation](https://vllm.readthedocs.io/en/latest/) to learn more.
-- [Installation](https://vllm.readthedocs.io/en/latest/getting_started/installation.html)
-- [Quickstart](https://vllm.readthedocs.io/en/latest/getting_started/quickstart.html)
-- [Supported Models](https://vllm.readthedocs.io/en/latest/models/supported_models.html)
+## Implementation Details
+The following features were implemented from the [base commit](https://github.com/SqueezeBits/vllm-fork/commit/60df2350b9455fa1c87b319a300840df7267f49e) from habana_main branch on vllm-fork.
+- Modified the shape of inputs from 2D to 1D.
+- Implemented chunked prefill scheduler.
+- Implemented paged-prompt-attention for the prefill sequences having KV caches from the previous chunks.
+- Implemented attention mask to properly handle different sequences and past contexts.
+- Implemented piggybacking on scheduler and attention.
+- Optimized HPU graphs behaviors.
 
-## Contributing
-
-We welcome and value any contributions and collaborations.
-Please check out [CONTRIBUTING.md](./CONTRIBUTING.md) for how to get involved.
-
-## Sponsors
-
-vLLM is a community project. Our compute resources for development and testing are supported by the following organizations. Thank you for your support!
-
-<!-- Note: Please sort them in alphabetical order. -->
-<!-- Note: Please keep these consistent with docs/source/community/sponsors.md -->
-
-- a16z
-- AMD
-- Anyscale
-- AWS
-- Crusoe Cloud
-- Databricks
-- DeepInfra
-- Dropbox
-- Lambda Lab
-- NVIDIA
-- Replicate
-- Roblox
-- RunPod
-- Sequoia Capital
-- Trainy
-- UC Berkeley
-- UC San Diego
-- ZhenFund
-
-We also have an official fundraising venue through [OpenCollective](https://opencollective.com/vllm). We plan to use the fund to support the development, maintenance, and adoption of vLLM.
-
-## Citation
-
-If you use vLLM for your research, please cite our [paper](https://arxiv.org/abs/2309.06180):
-```bibtex
-@inproceedings{kwon2023efficient,
-  title={Efficient Memory Management for Large Language Model Serving with PagedAttention},
-  author={Woosuk Kwon and Zhuohan Li and Siyuan Zhuang and Ying Sheng and Lianmin Zheng and Cody Hao Yu and Joseph E. Gonzalez and Hao Zhang and Ion Stoica},
-  booktitle={Proceedings of the ACM SIGOPS 29th Symposium on Operating Systems Principles},
-  year={2023}
-}
-```
+## Future Works
+- Rebase to the latest habana_main branch. (after habana_next being merged).
+- Minimize internal paddings and tensor manipulations such as slicing and concatenating for further optimization.
