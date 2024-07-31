@@ -29,11 +29,6 @@ def fetch_from_cache(cache, blocks, permutations):
         for i in range(blocks.size(1))
     ]
 
-def fetch_from_cache_1d(cache, blocks):
-    blocks_list = blocks.flatten()
-    data = cache.index_select(0, blocks_list)
-    data = data.view(blocks.shape[0], -1, cache.shape[2], cache.shape[3])
-    return data
 
 @hpu_utils.with_mark_steps
 def paged_attention_v1(query,

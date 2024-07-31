@@ -732,13 +732,13 @@ class SchedulerConfig:
                  enable_piggybacking: bool = False,
                  embedding_mode: Optional[bool] = False,
                  preemption_mode: Optional[str] = None) -> None:
-        if enable_chunked_prefill and not enable_1d_prefill:
-            enable_1d_prefill = True
-        if enable_piggybacking and not enable_chunked_prefill:
-            # This warning can be removed after integrating enable_chunked_prefill and enable_piggybacking flags.
-            logger.warning("Setting enable_chunked_prefill to True to enable piggybacking.")
+        # Even though these flags are set concurrently for ease of use,
+        # they remain split for separate benchmarks.
+        # They can be integrated if the separate benchmarks are not necessary.
+        if enable_piggybacking or enable_chunked_prefill or enable_1d_prefill:
             enable_1d_prefill = True
             enable_chunked_prefill = True
+            enable_piggybacking = True
 
         if max_num_batched_tokens is not None:
             self.max_num_batched_tokens = max_num_batched_tokens
@@ -768,8 +768,6 @@ class SchedulerConfig:
         self.embedding_mode = embedding_mode
         self.preemption_mode = preemption_mode
         self.piggybacking_enabled = enable_piggybacking
-        if self.chunked_prefill_enabled and not self.piggybacking_enabled:
-            raise NotImplementedError("prefill-chunking without piggybacking is not implemented yet.")
 
         self._verify_args()
 

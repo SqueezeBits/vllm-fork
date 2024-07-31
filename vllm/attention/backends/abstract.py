@@ -59,7 +59,8 @@ class AttentionBackend(ABC):
 @dataclass
 class AttentionMetadataPerStage:
     """Attention metadata for a specific stage. I.e., prefill or decode."""
-    # Not that this class is required for chunked-prefill
+    # Note that this class is required for chunked-prefill,
+    # as each prefill and decode phase should have their own metadata.
     
     # Total number of prefill requests.
     num_prefills: torch.Tensor

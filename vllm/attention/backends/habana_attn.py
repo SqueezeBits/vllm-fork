@@ -103,7 +103,7 @@ class HabanaAttentionMetadata(AttentionMetadataPerStage, HabanaPagedAttentionMet
     # Maximum sequence length in the batch.
     max_seq_len: Optional[int] = None
 
-    # A tensor of query lengths is the current chunk
+    # A tensor of query lengths in the current chunk
     query_lens_tensor: Optional[torch.Tensor] = None
 
     def __post_init__(self):
@@ -329,7 +329,3 @@ def _make_alibi_bias(
     if num_heads != num_kv_heads:
         bias = bias.unflatten(1, (num_kv_heads, num_heads // num_kv_heads))
     return bias
-
-def pad_to_bucket(target: torch.Tensor, bucket_size: torch.Tensor) -> torch.Tensor:
-    seq_bucket_len = ((target.size(0) + bucket_size - 1) // bucket_size) * bucket_size
-    return torch.nn.functional.pad(target, (0, 0, 0, 0, seq_bucket_len - target.size(0), 0), value=0)

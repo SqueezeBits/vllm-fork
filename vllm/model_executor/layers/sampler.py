@@ -108,8 +108,11 @@ class Sampler(nn.Module):
         else:
             on_device_tensors = None
 
-        # Get the logprobs query results.
+        # Offload logprobs to CPU to reduce recompilation.
+        # It can be removed if it leads to performance degradation.
         logprobs = logprobs.to("cpu")
+
+        # Get the logprobs query results.
         prompt_logprobs, sample_logprobs = _get_logprobs(
             logprobs, sampling_metadata, sample_results)
         return _build_sampler_output(sample_results,

@@ -159,14 +159,13 @@ class HpuModelAdapter():
         input_ids = kwargs['input_ids']
 
         # These variables are required for chunked-prefill.
-        prefill_size = kwargs.pop("max_num_batched_tokens", 512)
-        decode_size = kwargs.pop("max_num_seqs", 256)
+        prefill_chunk_size = kwargs.pop("max_num_batched_tokens", 512)
 
         attn_metadata = kwargs['attn_metadata']
         kwargs['attn_metadata'] = self._set_attn_bias(
             attn_metadata,
             input_ids.size(0),
-            input_ids.size(1) if not enable_1d_prefill else prefill_size,
+            input_ids.size(1) if not enable_1d_prefill else prefill_chunk_size,
             input_ids.device,
             torch.bfloat16,
             enable_1d_prefill=enable_1d_prefill,
@@ -692,7 +691,6 @@ class HabanaModelRunner:
                 if seq_group_metadata.block_tables is not None:
                     # Prefill has chunked before.
                     block_table = seq_group_metadata.block_tables[seq_id]
-                    # TODO(minkyu): shouldn't we use computed_block_nums for this? 
                     prefix_block_tables.append(block_table[:(context_len - 1) // self.block_size + 1])
                 else:
                     # The first prefill.
@@ -775,15 +773,6 @@ class HabanaModelRunner:
         else:
             multi_modal_input = None
 
-        # max_prompt_block_table_len = max(len(t) for t in prefix_block_tables)
-        # max_prompt_len = max(find_bucket(max(seq_lens), self.prompt_seq_bucket_cfg), self.block_size)
-
-        # TODO(minkyu): reconsider using prefix_block_tables, we might need this for prefix caching
-        # block_tables = make_tensor_with_pad(prefix_block_tables,
-        #                                     max_len=max_prompt_block_table_len,
-        #                                     pad=0,
-        #                                     dtype=torch.int,
-        #                                     device=self.device)
         block_tables = torch.tensor([prefix_block_tables[0]], dtype=torch.int, device=self.device)
 
         # Query length can be shorter than key (i.e., prompt) when prefill
@@ -811,7 +800,7 @@ class HabanaModelRunner:
                                                dtype=torch.long,
                                                device=self.device)
 
-        # NOTE: Make attn_bias on cpu,
+        # Make attn_bias on cpu,
         # because it causes re-compilation on hpu.
         context_len = context_lens[0]
         num_blocks = (context_len - 1) // self.block_size + 1
@@ -1082,17 +1071,17 @@ class HabanaModelRunner:
             else:
                 # TODO(huijong): restore lora functionality
                 if prefill_attn_metadata is None:
-                    prefill_size = self.scheduler_config.max_num_batched_tokens
-                    input_tokens = torch.zeros((1, prefill_size), device=input_tokens.device, dtype=input_tokens.dtype)
-                    input_positions = torch.zeros((1, prefill_size), device=input_positions.device, dtype=input_positions.dtype)
-                    slot_mapping = torch.zeros((1, prefill_size), device=slot_mapping.device, dtype=slot_mapping.dtype)
-                    num_prefill_tokens = prefill_size
+                    prefill_chunk_size = self.scheduler_config.max_num_batched_tokens
+                    input_tokens = torch.zeros((1, prefill_chunk_size), device=input_tokens.device, dtype=input_tokens.dtype)
+                    input_positions = torch.zeros((1, prefill_chunk_size), device=input_positions.device, dtype=input_positions.dtype)
+                    slot_mapping = torch.zeros((1, prefill_chunk_size), device=slot_mapping.device, dtype=slot_mapping.dtype)
+                    num_prefill_tokens = prefill_chunk_size
                 if decode_attn_metadata is None:
-                    decode_size = self.scheduler_config.max_num_seqs
-                    decode_input_tokens = torch.zeros((1, decode_size), device=decode_input_tokens.device, dtype=decode_input_tokens.dtype)
-                    decode_input_positions = torch.zeros((1, decode_size), device=decode_input_positions.device, dtype=decode_input_positions.dtype)
-                    decode_slot_mapping = torch.zeros((1, decode_size), device=decode_slot_mapping.device, dtype=decode_slot_mapping.dtype)
-                    num_decode_tokens = decode_size
+                    decode_chunk_size = self.scheduler_config.max_num_seqs
+                    decode_input_tokens = torch.zeros((1, decode_chunk_size), device=decode_input_tokens.device, dtype=decode_input_tokens.dtype)
+                    decode_input_positions = torch.zeros((1, decode_chunk_size), device=decode_input_positions.device, dtype=decode_input_positions.dtype)
+                    decode_slot_mapping = torch.zeros((1, decode_chunk_size), device=decode_slot_mapping.device, dtype=decode_slot_mapping.dtype)
+                    num_decode_tokens = decode_chunk_size
 
                 input_tokens = torch.concat((input_tokens, decode_input_tokens), dim=-1)
                 input_positions = torch.concat((input_positions, decode_input_positions), dim=-1)
@@ -1307,7 +1296,6 @@ class HabanaModelRunner:
                 bypass_hpu_graphs=not use_graphs,
                 enable_1d_prefill=self.scheduler_config.enable_1d_prefill,
                 max_num_batched_tokens=self.scheduler_config.max_num_batched_tokens,
-                max_num_seqs=self.scheduler_config.max_num_seqs,
             )
 
         # Compute the logits.

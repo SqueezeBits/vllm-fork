@@ -418,7 +418,7 @@ if __name__ == "__main__":
                         help="enable chunked prefill for vLLM backend.")
     parser.add_argument("--enable-piggybacking",
                         action='store_true',
-                        help="If true, use piggybacking instead of separating prefills and decodes.")
+                        help="use piggybacking instead of separating prefills and decodes.")
     parser.add_argument('--max-num-batched-tokens',
                         type=int,
                         default=None,

@@ -500,6 +500,12 @@ class EngineArgs:
             action='store_true',
             help='If set, the prefill requests can be chunked based on the '
             'max_num_batched_tokens.')
+        parser.add_argument("--enable-1d-prefill",
+            action='store_true',
+            help="If True, use 1d query throughout the prefill phase.")
+        parser.add_argument("--enable-piggybacking",
+            action='store_true',
+            help="If True, use piggybacking instead of separating prefills and decodes.")
 
         parser.add_argument(
             '--speculative-model',
