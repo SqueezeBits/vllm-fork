@@ -57,11 +57,9 @@ class BaseLogitsProcessor:
             raise TypeError(
                 f"Unsupported instruction type {type(instruction)}")
 
-        mask = torch.full((scores.shape[-1], ),
-                          -math.inf,
-                          device=scores.device)
+        mask = torch.ones((scores.shape[-1], ), device=scores.device, dtype=torch.bool)
         mask[allowed_tokens] = 0
-        scores.add_(mask)
+        scores.masked_fill_(mask, -math.inf)
         return scores
 
 
