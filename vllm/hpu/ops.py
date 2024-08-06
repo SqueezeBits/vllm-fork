@@ -11,6 +11,7 @@ import torch
 import torch.nn.functional as F
 
 from vllm.logger import init_logger
+from vllm.hpu.utils import with_mark_steps
 
 logger = init_logger(__name__)
 HPUFusedRMSNorm = None
@@ -153,6 +154,64 @@ def prompt_attention(
         attn_weights = FusedSDPA.apply(query, key, value, None, 0.0, True,
                                        scale, softmax_mode, recompute_mode,
                                        valid_seq_lengths, 'right')
+    attn_weights = attn_weights.transpose(1, 2)
+    return attn_weights
+
+
+@with_mark_steps
+def prompt_attention_with_context(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    key_cache: torch.Tensor,
+    value_cache: torch.Tensor,
+    block_list: torch.Tensor,
+    attn_bias: torch.Tensor,
+    scale: float,
+    matmul_qk_op,
+    matmul_av_op,
+    softmax_op,
+    keys_fetch_func,
+    values_fetch_func,
+    
+) -> torch.Tensor:
+    query.mul_(scale)
+
+    batch_size, _, query_heads, _ = query.shape
+    _, block_size, kv_heads, _ = key_cache.shape
+    max_num_blocks = block_list.size(-1) // batch_size
+    context_len = max_num_blocks * block_size
+
+    query = query.transpose(1, 2)
+    key = key.transpose(1, 2)
+    value = value.transpose(1, 2)
+
+    past_keys = keys_fetch_func(key_cache, block_list)
+    past_keys = past_keys.reshape(batch_size, context_len, kv_heads, -1)
+    past_keys = past_keys.transpose(1, 2)
+    key = torch.concat((past_keys, key), dim=-2)
+
+    past_values = values_fetch_func(value_cache, block_list)
+    past_values = past_values.reshape(batch_size, context_len, kv_heads, -1)
+    past_values = past_values.transpose(1, 2)
+    value = torch.concat((past_values, value), dim=-2)
+
+    if query_heads != kv_heads:
+        query = query.unflatten(1, (kv_heads, -1))
+        key = key.unflatten(1, (kv_heads, 1))
+        past_keys = past_keys.unflatten(1, (kv_heads, 1))
+        value = value.unflatten(1, (kv_heads, 1))
+        past_values = past_values.unflatten(1, (kv_heads, 1))
+        attn_bias = attn_bias.unsqueeze(2)
+
+    attn_weights = matmul_qk_op(query, key.transpose(-1, -2))
+    attn_weights.add_(attn_bias)
+    attn_weights = softmax_op(attn_weights, dim=-1)
+    attn_weights = matmul_av_op(attn_weights, value)
+
+    if query_heads != kv_heads:
+        attn_weights = attn_weights.flatten(1, 2)
+
     attn_weights = attn_weights.transpose(1, 2)
     return attn_weights
 
