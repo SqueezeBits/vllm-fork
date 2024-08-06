@@ -58,8 +58,8 @@ logger = init_logger(__name__)
 _TYPE_CACHE = {}
 # These values are assumed to be zero in several places.
 # Use caution when updating them!
-_PAD_SLOT_ID = 0
-_PAD_BLOCK_ID = 0
+_PAD_SLOT_ID = torch.iinfo(torch.int).max - 256
+_PAD_BLOCK_ID = torch.iinfo(torch.int).max 
 
 LORA_WARMUP_RANK = 8
 
@@ -261,20 +261,37 @@ class HpuModelAdapter():
 
     def _set_attn_bias(self, attn_metadata, batch_size, seq_len, device,
                        dtype):
-        prefill_metadata = attn_metadata
-        if prefill_metadata is None or self.prefill_use_fusedsdpa:
+        if (attn_metadata is None or self.prefill_use_fusedsdpa 
+            or not attn_metadata.is_prompt):
             return attn_metadata
 
+        prefill_metadata = attn_metadata
+
         seq_lens_t = prefill_metadata.seq_lens_tensor
+        context_lens_t = prefill_metadata.context_lens_tensor
+        query_lens_t = seq_lens_t - context_lens_t
+        
+        block_list = attn_metadata.block_list
+        max_context_len = (block_list.size(-1) // batch_size 
+                           if block_list is not None else 0)
+        max_context_len = max_context_len * self.block_size
+        past_mask = torch.arange(0, max_context_len, dtype=torch.int32, 
+                                  device=device)
+        past_mask = (past_mask.view(1, -1).expand(batch_size, -1)
+                     .ge(context_lens_t.view(-1, 1)).view(batch_size, 1, -1)
+                     .expand(batch_size, seq_len, -1)
+                     .view(batch_size, 1, seq_len, -1))
+         
         len_mask = (torch.arange(0, seq_len, device=device,
                                  dtype=torch.int32).view(1, seq_len).ge(
-                                     seq_lens_t.unsqueeze(-1)).view(
+                                     query_lens_t.unsqueeze(-1)).view(
                                          batch_size, 1, 1, seq_len))
         causal_mask = torch.triu(torch.ones((batch_size, 1, seq_len, seq_len),
                                             device=device,
                                             dtype=torch.bool),
                                  diagonal=1)
         mask = causal_mask.logical_or(len_mask)
+        mask = torch.concat((past_mask, mask), dim=-1)
         attn_bias = (torch.zeros_like(mask, dtype=dtype).masked_fill_(
             mask, -math.inf))
         attn_metadata = prefill_metadata._replace(attn_bias=attn_bias)
@@ -822,7 +839,7 @@ class HabanaModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         assert max_query_len > 0
 
         max_prompt_len = max(
-            find_bucket(max(seq_lens), self.prompt_seq_bucket_cfg),
+            find_bucket(max_query_len, self.prompt_seq_bucket_cfg),
             self.block_size)
 
         lora_mask: torch.Tensor = None
@@ -868,6 +885,27 @@ class HabanaModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             lora_mask = lora_mask.to('hpu')
             lora_logits_mask = lora_logits_mask.to('hpu')
 
+        if any(context_lens):
+            assert not self.scheduler_config.chunked_prefill_enabled
+            # prefix caching 
+            
+            max_num_block = max(len(bt) for bt in prefix_block_tables)
+            prefix_block_list = list(itertools.chain.from_iterable(
+                bt if len(bt) == max_num_block 
+                else bt + ([_PAD_BLOCK_ID] * (max_num_block - len(bt))) 
+                for bt in prefix_block_tables))
+
+            # TODO: pad to proper len
+            pad_len = len(prefix_block_list)
+            prefix_block_list = pad_list(prefix_block_list, pad_len, _PAD_BLOCK_ID)
+
+            prefix_block_list_tensor = torch.tensor(prefix_block_list, 
+                                                    dtype=torch.long, 
+                                                    device=self.device)
+        else:
+            prefix_block_list_tensor = None
+
+
         input_tokens = make_tensor_with_pad(input_tokens,
                                             max_len=max_prompt_len,
                                             pad=0,
@@ -890,13 +928,19 @@ class HabanaModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                        dtype=torch.long,
                                        device=self.device)
 
+        # TODO: remove if possible
+        context_lens_tensor = torch.tensor(context_lens,
+                                           dtype=torch.long, 
+                                           device=self.device)
+        
         attn_metadata = self.attn_backend.make_metadata(
             is_prompt=True,
-            block_list=None,
+            block_list=prefix_block_list_tensor,
             block_mapping=None,
             block_usage=None,
             attn_bias=None,
             seq_lens_tensor=seq_lens_tensor,
+            context_lens_tensor=context_lens_tensor,
             num_prefills=real_num_seqs,
             num_prefill_tokens=sum_query_len,
             num_decode_tokens=0,
@@ -1051,6 +1095,7 @@ class HabanaModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             block_usage=block_usage,
             attn_bias=None,
             seq_lens_tensor=None,
+            context_lens_tensor=None,
             num_prefills=0,
             num_prefill_tokens=0,
             num_decode_tokens=num_decode_tokens,
@@ -1168,7 +1213,7 @@ class HabanaModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         # FIXME: We need to adjust selected_token_indices to accommodate
         # for padding
         max_len = input_tokens.size(1)
-        paddings = [max_len - s for s in seq_lens]
+        paddings = [max_len - q for q in query_lens]
         paddings = [0] + paddings[:-1]
         paddings = list(itertools.accumulate(paddings))
         paddings_prompt_logprobs = []
@@ -1265,8 +1310,8 @@ class HabanaModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         # input_hash(123) != input_hash(321)
         # input_hash("abc") != input_hash("cba")
         attention_metadata = subtuple(metadata, 'TrimmedAttentionMetadata', [
-            'attn_bias', 'seq_lens_tensor', 'block_list', 'block_mapping',
-            'block_usage', 'slot_mapping', 'is_prompt'
+            'attn_bias', 'seq_lens_tensor', 'context_lens_tensor', 'block_list',
+            'block_mapping', 'block_usage', 'slot_mapping', 'is_prompt'
         ])
         return attention_metadata
 
