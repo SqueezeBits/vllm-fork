@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
+from datasets import load_dataset
 import numpy as np
 from backend_request_func import (ASYNC_REQUEST_FUNCS, RequestFuncInput,
                                   RequestFuncOutput)
@@ -187,6 +188,43 @@ def sample_sonnet_requests(
     return sampled_requests
 
 
+def sample_dataset_requests(
+    dataset_path: str,
+    num_requests: int,
+    input_len: int,
+    output_len: int,
+    tokenizer: PreTrainedTokenizerBase,
+    split: str,
+    prompt_key: str,
+    input_key: str,
+) -> List[Tuple[str, int, int]]:
+    dataset = load_dataset(dataset_path, split=split, streaming=False)
+    input_requests = []
+    for i, req in enumerate(dataset):
+        if i >= num_requests:
+            break
+        try:
+            prompt = " ".join([req[prompt_key], req[input_key]])
+        except KeyError as e:
+            raise KeyError(
+                f"{e}. Please verify prompt_key and input_key for the dataset."
+            ) from e
+        message = [
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ]
+        prompt_formatted = tokenizer.apply_chat_template(
+            message, add_generation_prompt=True, tokenize=False
+        )
+        prompt_ids = tokenizer(prompt_formatted).input_ids
+        if len(prompt_ids) > input_len:
+            tokenizer.decode(prompt_ids[:input_len])
+        input_requests.append((prompt, len(prompt_ids), output_len))
+    return input_requests
+
+
 def sample_random_requests(
         input_len: int, output_len: int, num_prompts: int, range_ratio: float,
         tokenizer: PreTrainedTokenizerBase) -> List[Tuple[str, int, int]]:
@@ -248,9 +286,8 @@ def calculate_metrics(
             # serving backends instead of looking at len(outputs[i].itl) since
             # multiple output tokens may be bundled together
             # Note : this may inflate the output token count slightly
-            output_len = len(
-                tokenizer(outputs[i].generated_text,
-                          add_special_tokens=False).input_ids)
+            # NOTE(SQZB): revert to len(outputs[i].itl) for accurate benchmarks.
+            output_len = len(outputs[i].itl)
             actual_output_lens.append(output_len)
             total_input += input_requests[i][1]
             if output_len > 1:
@@ -302,6 +339,7 @@ async def benchmark(
     use_beam_search: bool,
     request_rate: float,
     disable_tqdm: bool,
+    ignore_eos: bool = False,
 ):
     if backend in ASYNC_REQUEST_FUNCS:
         request_func = ASYNC_REQUEST_FUNCS[backend]
@@ -318,6 +356,7 @@ async def benchmark(
         output_len=test_output_len,
         best_of=best_of,
         use_beam_search=use_beam_search,
+        ignore_eos=ignore_eos,
     )
     test_output = await request_func(request_func_input=test_input)
     if not test_output.success:
@@ -342,6 +381,7 @@ async def benchmark(
             output_len=output_len,
             best_of=best_of,
             use_beam_search=use_beam_search,
+            ignore_eos=ignore_eos,
         )
         tasks.append(
             asyncio.create_task(
@@ -490,10 +530,54 @@ def main(args: argparse.Namespace):
                               for prompt, prompt_formatted, prompt_len,
                               output_len in input_requests]
 
+    elif args.dataset_name == "openorca":
+        split = "train"
+        prompt_key = "system_prompt"
+        input_key = "question"
+        input_requests = sample_dataset_requests(
+            dataset_path=args.dataset_path,
+            num_requests=args.num_prompts,
+            input_len=args.input_len,
+            output_len=args.output_len,
+            tokenizer=tokenizer,
+            split=split,
+            prompt_key=prompt_key,
+            input_key=input_key
+        )
+    
+    elif args.dataset_name == "openhuijong":
+        if args.split is None:
+            match args.input_len:
+                case 1024:
+                    split = "1k"
+                case 2048:
+                    split = "2k"
+                case 4096:
+                    split = "4k"
+                case 8192:
+                    split = "8k"
+                case _:
+                    raise RuntimeError("Please specify a proper split "
+                                       "for openhuijong dataset "
+                                       "according to the target input_len.")
+
+        prompt_key = "system_prompt"
+        input_key = "user_prompt"
+        input_requests = sample_dataset_requests(
+            dataset_path=args.dataset_path,
+            num_requests=args.num_prompts,
+            input_len=args.input_len,
+            output_len=args.output_len,
+            tokenizer=tokenizer,
+            split=split,
+            prompt_key=prompt_key,
+            input_key=input_key
+        )
+
     elif args.dataset_name == "random":
         input_requests = sample_random_requests(
-            input_len=args.random_input_len,
-            output_len=args.random_output_len,
+            input_len=args.input_len,
+            output_len=args.output_len,
             num_prompts=args.num_prompts,
             range_ratio=args.random_range_ratio,
             tokenizer=tokenizer,
@@ -513,6 +597,7 @@ def main(args: argparse.Namespace):
             use_beam_search=args.use_beam_search,
             request_rate=args.request_rate,
             disable_tqdm=args.disable_tqdm,
+            ignore_eos=args.ignore_eos,
         ))
 
     # Save config and results to json
@@ -564,7 +649,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--backend",
         type=str,
-        default="vllm",
+        default="openai-chat",
         choices=list(ASYNC_REQUEST_FUNCS.keys()),
     )
     parser.add_argument(
@@ -578,7 +663,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--endpoint",
         type=str,
-        default="/v1/completions",
+        default="/v1/chat/completions",
         help="API endpoint.",
     )
     parser.add_argument(
@@ -592,13 +677,17 @@ if __name__ == "__main__":
         "--dataset-name",
         type=str,
         default="sharegpt",
-        choices=["sharegpt", "sonnet", "random"],
+        choices=["sharegpt", "sonnet", "openorca", "openhuijong", "random"],
         help="Name of the dataset to benchmark on.",
     )
     parser.add_argument("--dataset-path",
                         type=str,
                         default=None,
                         help="Path to the dataset.")
+    parser.add_argument("--split",
+                        type=str,
+                        default=None,
+                        help="Split for the dataset.")
     parser.add_argument(
         "--model",
         type=str,
@@ -619,6 +708,12 @@ if __name__ == "__main__":
         "returns the best one.",
     )
     parser.add_argument("--use-beam-search", action="store_true")
+    parser.add_argument(
+        "--ignore-eos",
+        action="store_true",
+        default=False,
+        help="If True, ignore eos."
+    )
     parser.add_argument(
         "--num-prompts",
         type=int,
@@ -665,6 +760,20 @@ if __name__ == "__main__":
         default=128,
         help=
         "Number of output tokens per request, used only for random sampling.",
+    )
+    parser.add_argument(
+        "--input-len",
+        type=int,
+        default=1024,
+        help=
+        "Number of input tokens per request.",
+    )
+    parser.add_argument(
+        "--output-len",
+        type=int,
+        default=128,
+        help=
+        "Number of output tokens per request.",
     )
     parser.add_argument(
         "--random-range-ratio",

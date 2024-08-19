@@ -24,6 +24,7 @@ class RequestFuncInput:
     model: str
     best_of: int = 1
     use_beam_search: bool = False
+    ignore_eos: bool = False
 
 
 @dataclass
@@ -237,6 +238,9 @@ async def async_request_openai_completions(
             "best_of": request_func_input.best_of,
             "max_tokens": request_func_input.output_len,
             "stream": True,
+            "ignore_eos": request_func_input.ignore_eos,
+            "stop_token_ids": [],
+            "use_beam_search": request_func_input.use_beam_search,
         }
         headers = {
             "Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"
@@ -320,6 +324,9 @@ async def async_request_openai_chat_completions(
             "temperature": 0.0,
             "max_tokens": request_func_input.output_len,
             "stream": True,
+            "ignore_eos": request_func_input.ignore_eos,
+            "stop_token_ids": [],
+            "use_beam_search": request_func_input.use_beam_search,
         }
         headers = {
             "Content-Type": "application/json",
