@@ -61,6 +61,7 @@ class BenchmarkMetrics:
     output_throughput: float
     mean_ttft_ms: float
     median_ttft_ms: float
+    max_ttft_ms: float
     std_ttft_ms: float
     p99_ttft_ms: float
     mean_tpot_ms: float
@@ -314,6 +315,7 @@ def calculate_metrics(
         mean_ttft_ms=np.mean(ttfts or 0) *
         1000,  # ttfts is empty if streaming is not supported by backend
         median_ttft_ms=np.median(ttfts or 0) * 1000,
+        max_ttft_ms=np.max(ttfts or 0) * 1000,
         std_ttft_ms=np.std(ttfts or 0) * 1000,
         p99_ttft_ms=np.percentile(ttfts or 0, 99) * 1000,
         mean_tpot_ms=np.mean(tpots or 0) * 1000,
@@ -442,6 +444,7 @@ async def benchmark(
         "output_throughput": metrics.output_throughput,
         "mean_ttft_ms": metrics.mean_ttft_ms,
         "median_ttft_ms": metrics.median_ttft_ms,
+        "max_ttft_ms": metrics.max_ttft_ms,
         "std_ttft_ms": metrics.std_ttft_ms,
         "p99_ttft_ms": metrics.p99_ttft_ms,
         "mean_tpot_ms": metrics.mean_tpot_ms,
