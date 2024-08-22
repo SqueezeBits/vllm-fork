@@ -12,6 +12,7 @@ from vllm.entrypoints.chat_utils import ChatCompletionMessageParam
 from vllm.entrypoints.openai.logits_processors import get_logits_processors
 from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingParams
+from vllm.sequence import RequestMetrics
 from vllm.utils import random_uuid
 
 
@@ -510,6 +511,7 @@ class CompletionResponse(OpenAIBaseModel):
     model: str
     choices: List[CompletionResponseChoice]
     usage: UsageInfo
+    metrics: List[RequestMetrics]
 
 
 class CompletionResponseStreamChoice(OpenAIBaseModel):
