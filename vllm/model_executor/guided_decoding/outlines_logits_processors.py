@@ -27,6 +27,7 @@ from outlines.fsm.json_schema import build_regex_from_schema
 from pydantic import BaseModel
 from transformers import PreTrainedTokenizerBase
 
+from vllm.hpu.utils import with_mark_steps
 
 class BaseLogitsProcessor:
 
@@ -34,6 +35,7 @@ class BaseLogitsProcessor:
         self._guide: Guide = guide
         self._fsm_state: DefaultDict[int, int] = defaultdict(int)
 
+    @with_mark_steps
     def __call__(self, input_ids: List[int],
                  scores: torch.Tensor) -> torch.Tensor:
         """Use the FSM to bias the logits before sampling the next token."""
