@@ -282,8 +282,10 @@ class DefaultModelLoader(BaseModelLoader):
                                           lora_config, multimodal_config,
                                           cache_config, scheduler_config)
             logger.info("Loading weights on %s ...", self.load_config.device)
-            model.load_weights(
-                self._get_weights_iterator(model_config.model,
+            # TODO(huijjj): workaround to avoid errors with safe_open + lazy HPU
+            with torch.device("cpu"):
+                model.load_weights(
+                    self._get_weights_iterator(model_config.model,
                                            model_config.revision,
                                            fall_back_to_pt=getattr(
                                                model,

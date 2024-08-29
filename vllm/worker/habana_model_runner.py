@@ -16,6 +16,7 @@ from typing import (TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple,
 
 import habana_frameworks.torch as htorch
 import torch
+import torch.distributed
 
 from vllm.attention import AttentionMetadata, get_attn_backend
 from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
@@ -44,6 +45,8 @@ from .profiler import Profiler
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionBackend
+
+import vllm.distributed.distributed_kv as dist_kv
 
 logger = init_logger(__name__)
 
@@ -1551,29 +1554,69 @@ class HabanaModelRunner(
             })
 
         htorch.core.mark_step()
-        if self.is_driver_worker:
-            model_event_name = ("model_"
-                                f"{'prompt' if is_prompt else 'decode'}_"
-                                f"bs{batch_size}_"
-                                f"seq{seq_len}_"
-                                f"graphs{'T' if use_graphs else 'F'}")
-        else:
-            model_event_name = 'model_executable'
-        with self.profiler.record_event('internal', model_event_name):
-            hidden_states = self.model.forward(
-                **execute_model_kwargs,
-                selected_token_indices=sampling_metadata.selected_token_indices
-            )
 
-        if self.lora_config:
-            from vllm.lora.layers import VocabParallelEmbeddingWithLoRA
-            modules = unwrap_model(self.model.model)
-            for module in modules:
-                if isinstance(module, VocabParallelEmbeddingWithLoRA):
-                    for i in range(0, len(module.indices_len)):
-                        module.indices_len[
-                            i] = sampling_metadata.selected_token_indices.numel(
-                            )
+        # check if the current run is profiling
+        is_profile_run = (kv_caches is None) or (kv_caches[0] is None)
+
+        # for disaggregated prefilling: allow bypassing model execution
+        bypass_model_exec = False
+
+        # Recv kv cache for disaggregated prefill
+        # Skip model execution if all required KV cache are received
+        if all([
+            is_prompt,
+            dist_kv.IS_KV_DECODE_INSTANCE,
+            not is_profile_run]):
+
+            hidden_states, bypass = dist_kv.recv_kv_caches_and_hidden_states(
+                self.model.model,
+                model_input,
+                kv_caches,
+            )
+            htorch.core.mark_step()
+
+            if bypass:
+                bypass_model_exec = True
+
+        if not bypass_model_exec:
+            if self.is_driver_worker:
+                model_event_name = ("model_"
+                                    f"{'prompt' if is_prompt else 'decode'}_"
+                                    f"bs{batch_size}_"
+                                    f"seq{seq_len}_"
+                                    f"graphs{'T' if use_graphs else 'F'}")
+            else:
+                model_event_name = 'model_executable'
+            with self.profiler.record_event('internal', model_event_name):
+                hidden_states = self.model.forward(
+                    **execute_model_kwargs,
+                    selected_token_indices=sampling_metadata.selected_token_indices
+                )
+
+            if self.lora_config:
+                from vllm.lora.layers import VocabParallelEmbeddingWithLoRA
+                modules = unwrap_model(self.model.model)
+                for module in modules:
+                    if isinstance(module, VocabParallelEmbeddingWithLoRA):
+                        for i in range(0, len(module.indices_len)):
+                            module.indices_len[
+                                i] = sampling_metadata.selected_token_indices.numel(
+                                )
+
+        # Send KV cache for disaggregated prefill
+        if all([
+            is_prompt,
+            dist_kv.IS_KV_PREFILL_INSTANCE,
+            not is_profile_run]):
+
+            htorch.core.mark_step()
+            dist_kv.send_kv_caches_and_hidden_states(
+                self.model.model,
+                model_input,
+                kv_caches,
+                hidden_states,
+            )
+            htorch.core.mark_step()
 
         # Compute the logits.
         with self.profiler.record_event(

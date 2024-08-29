@@ -41,7 +41,7 @@ from vllm.usage.usage_lib import UsageContext
 from vllm.utils import FlexibleArgumentParser
 from vllm.version import __version__ as VLLM_VERSION
 
-TIMEOUT_KEEP_ALIVE = 5  # seconds
+# TIMEOUT_KEEP_ALIVE = 5  # seconds
 
 engine: AsyncLLMEngine
 engine_args: AsyncEngineArgs
@@ -292,7 +292,7 @@ async def run_server(args: Namespace,
         host=args.host,
         port=args.port,
         log_level=args.uvicorn_log_level,
-        timeout_keep_alive=TIMEOUT_KEEP_ALIVE,
+        # timeout_keep_alive=TIMEOUT_KEEP_ALIVE,
         ssl_keyfile=args.ssl_keyfile,
         ssl_certfile=args.ssl_certfile,
         ssl_ca_certs=args.ssl_ca_certs,

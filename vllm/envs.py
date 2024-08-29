@@ -143,6 +143,9 @@ environment_variables: Dict[str, Callable[[], Any]] = {
     lambda: int(os.getenv('VLLM_PORT', '0'))
     if 'VLLM_PORT' in os.environ else None,
 
+    'VLLM_RPC_PORT':
+    lambda: int(os.getenv('VLLM_PORT', '5570')),
+
     # If true, will load models from ModelScope instead of Hugging Face Hub.
     # note that the value is true or false, not numbers
     "VLLM_USE_MODELSCOPE":
@@ -188,7 +191,7 @@ environment_variables: Dict[str, Callable[[], Any]] = {
 
     # timeout for each iteration in the engine
     "VLLM_ENGINE_ITERATION_TIMEOUT_S":
-    lambda: int(os.environ.get("VLLM_ENGINE_ITERATION_TIMEOUT_S", "60")),
+    lambda: int(os.environ.get("VLLM_ENGINE_ITERATION_TIMEOUT_S", "600000000")),
 
     # API key for VLLM API server
     "VLLM_API_KEY":
@@ -309,6 +312,11 @@ environment_variables: Dict[str, Callable[[], Any]] = {
         )),
     "VLLM_FUSED_MOE_CHUNK_SIZE":
     lambda: int(os.getenv("VLLM_FUSED_MOE_CHUNK_SIZE", "65536")),
+
+    # Specify the role of current vllm instance
+    # Value can be "prefill", "decode".
+    "VLLM_DISAGG_PREFILL_ROLE":
+    lambda: os.getenv("VLLM_DISAGG_PREFILL_ROLE", None),
 
     # If set, vllm will skip the deprecation warnings.
     "VLLM_NO_DEPRECATION_WARNING":
