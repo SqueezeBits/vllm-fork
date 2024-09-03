@@ -95,12 +95,11 @@ def get_model_id(url: str):
 async def send_request(
     url: str,
     token_ids: list[int],
-    max_output_len: int,
     model_id: str,
+    max_output_len: int,
     ignore_eos: bool,
     stop_token_ids: list[int],
-    guided_json: bool,
-    json_template: dict,
+    json_template: dict | None,
 ) -> None:
     input_len = len(token_ids)
     payload = {
@@ -113,7 +112,7 @@ async def send_request(
         "stop_token_ids": stop_token_ids
     }
 
-    if guided_json:
+    if json_template:
         payload["guided_json"] = json_template
 
     request_start_time = time.perf_counter()
@@ -146,35 +145,32 @@ async def benchmark(
     ignore_eos: bool,
     stop_token_ids: list[int],
     request_rate: float,
-    enable_lora: bool,
-    random_lora: bool,
     lora_pattern: list[Any],
-    guided_json: bool,
-    json_template: dict,
+    random_lora: bool,
+    json_template: dict | None,
 ) -> None:
     common_payloads: dict[str, Any] = dict(
-        model_id=model_id,
         max_output_len=max_output_len,
         ignore_eos=ignore_eos,
         stop_token_ids=stop_token_ids,
-        guided_json=guided_json,
         json_template=json_template,
     )
 
     tasks: list[asyncio.Task] = []
     req_idx = 0
     async for tok_ids in get_prompt(prompts, request_rate):
-        if enable_lora:
+        model = model_id
+        if lora_pattern:
             if random_lora:
                 lora_id = random.choice(lora_pattern)
             else:
-                lora_id = lora_pattern[req_idx % len(lora_pattern)] 
-                req_idx += 1
-            if lora_id is not None:
-                common_payloads["model_id"] = lora_id
+                lora_id = lora_pattern[req_idx % len(lora_pattern)]
+            if lora_id:
+                model = lora_id
+        req_idx += 1
 
         task = asyncio.create_task(
-            send_request(url, tok_ids, **common_payloads))
+            send_request(url, tok_ids, model, **common_payloads))
         tasks.append(task)
     
     [await t for t in tqdm.asyncio.tqdm.as_completed(tasks)]
@@ -201,15 +197,17 @@ def main(args: argparse.Namespace):
         args.num_requests
     )
 
-    if args.guided_json:
+    if args.json_template:
         with open(args.json_template, 'r') as file:
             json_template = json.load(file)
+    else:
+        json_template = None
 
     benchmark_start_time = time.perf_counter()
     asyncio.run(benchmark(url + "/v1/completions", model_id, input_prompts, 
                           args.max_output_len, not args.dataset, stop_token_ids,
-                          args.request_rate, args.enable_lora, args.random_lora,
-                          args.lora_pattern, args.guided_json, json_template)) 
+                          args.request_rate, args.lora_pattern, args.random_lora,
+                          json_template)) 
     benchmark_end_time = time.perf_counter()
     benchmark_time = benchmark_end_time - benchmark_start_time
     df = pd.DataFrame(data=results)
@@ -243,8 +241,8 @@ def main(args: argparse.Namespace):
     out_path += f"_total_{benchmark_time}"
     out_path += f"_in_{total_input_tokens}"
     out_path += f"_out_{total_generated_tokens}"
-    out_path += "_LoRA" if args.enable_lora else ""
-    out_path += "_guided" if args.guided_json else ""
+    out_path += "_LoRA" if args.lora_pattern else ""
+    out_path += "_guided" if args.json_template else ""
     out_path += f"_{args.dataset.split('/')[-1]}" if args.dataset else "_random"
     out_path += f"_{args.num_requests}"
     out_path += ".pkl"
@@ -276,25 +274,16 @@ if __name__ == "__main__":
                              "Otherwise, we use Poisson process to synthesize "
                              "the request arrival times.")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--guided-json", action="store_true",
-                        help="Enable guided json")
     parser.add_argument("--json-template", type=str, default=None,
-                        help="Path to guided json template. "
-                             "If not given, default json template is applied.")
-    parser.add_argument("--enable-lora", action='store_true',
-                        help="Enable Multi-LoRA")
-    parser.add_argument("--random-lora", action='store_true',
-                        help="Shuffle lora-pattern randomly.")
+                        help="Path to guided json template.")
     parser.add_argument("--lora-pattern", type=parse_lora_pattern, default=[],
                         help="Multi-batch LoRA ids. Skip LoRA for empty IDs. "
                              "e.g.: ,,sql-lora,sql-lora-2"
-                             "LoRAs are applied in round-robin manner.")
+                             "LoRAs are applied in round-robin manner "
+                             "unless random-lora flag is set.")
+    parser.add_argument("--random-lora", action='store_true',
+                        help="Shuffle lora-pattern randomly.")
 
     args = parser.parse_args()
-
-    if args.enable_lora:
-        assert args.lora_pattern, "LoRA pattern must be set."
-    if args.guided_json:
-        assert args.json_template, "Guided JSON template must be given."
 
     main(args)
