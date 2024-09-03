@@ -66,6 +66,7 @@ python -m vllm.entrypoints.openai.api_server \
     --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
     --block-size 128 \
     --max-model-len 2048 \
+    --enable-lora \
     --max-loras 2 \
     --max-lora-rank 8 \
     --lora-modules lora-1=/scratch-1/models/Gaudi_LoRA_Llama-3-8B-Instruct lora-2=/scratch-1/models/Gaudi_LoRA_Llama-3-8B-Instruct \
