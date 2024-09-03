@@ -79,7 +79,6 @@ python benchmarks/benchmark_sqzb.py \
     --dataset /scratch-1/datasets/llama3-1k.pkl \
     --max-input-len 1024 \
     --max-output-len 1024 \
-    --enable-lora \
     --lora-pattern ,lora-1,lora-2
 ```
 
@@ -100,6 +99,5 @@ python benchmarks/benchmark_sqzb.py \
     --dataset /scratch-1/datasets/llama3-1k.pkl \
     --max-input-len 1024 \
     --max-output-len 1024 \
-    --guided-json \
     --json-template benchmarks/guided_json_template.json
 ```
