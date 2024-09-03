@@ -1,0 +1,34 @@
+{
+    "$defs": {
+        "SearchQuery": {
+            "description": "Search query for the retrieval task.",
+            "properties": {
+                "query_type": {
+                    "description": "The type of query most effective for handling the retrieval task.",
+                    "title": "Query Type",
+                    "type": "string"
+                },
+                "query": {
+                    "description": "A random user's search query.",
+                    "title": "Query",
+                    "type": "string"
+                }
+            },
+            "required": ["query_type", "query"],
+            "title": "SearchQuery",
+            "type": "object"
+        }
+    },
+    "description": "A list of search queries anticipating a user looking for information from a given web page.",
+    "properties": {
+        "queries": {
+            "description": "Brainstormed search queries for the given web page.",
+            "items": {"$ref": "#/$defs/SearchQuery"},
+            "title": "Queries",
+            "type": "array"
+        }
+    },
+    "required": ["queries"],
+    "title": "Brainstorm",
+    "type": "object"
+}
