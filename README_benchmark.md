@@ -80,8 +80,7 @@ python benchmarks/benchmark_sqzb.py \
     --max-input-len 1024 \
     --max-output-len 1024 \
     --enable-lora \
-    --lora-pattern ,lora-1,lora-2 \
-    --random-lora
+    --lora-pattern ,lora-1,lora-2
 ```
 
 ### Guided JSON
