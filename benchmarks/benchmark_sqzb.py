@@ -7,14 +7,14 @@ import time
 import json
 import functools
 from dataclasses import dataclass
-from typing import AsyncGenerator, Any
+from typing import AsyncGenerator, Any, Optional, List
 
 import numpy as np
 import pandas as pd
 import torch
 import tqdm
 import tqdm.asyncio
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 
 @dataclass
@@ -34,11 +34,49 @@ class RequestResult():
 results: list[RequestResult] = []
 
 
+def sample_requests(
+    dataset: pd.DataFrame,
+    num_requests: int,
+    tokenizer: PreTrainedTokenizerBase,
+) -> List[List[int]]:
+    # Only keep the first two turns of each conversation.
+    dataset_list = [(row["conversations"][0]["value"],
+                     row["conversations"][1]["value"])
+                    for _, row in dataset.iterrows()
+                    if len(row["conversations"]) >= 2]
+
+    # Shuffle the dataset.
+    random.shuffle(dataset_list)
+
+    # Filter out sequences that are too long or too short
+    filtered_dataset = []
+    for conversation in dataset_list:
+        if len(filtered_dataset) == num_requests:
+            break
+
+        # Tokenize the prompts and completions.
+        prompt, completion = conversation
+        prompt_token_ids = tokenizer(prompt).input_ids
+        completion_token_ids = tokenizer(completion).input_ids
+        prompt_len = len(prompt_token_ids)
+        output_len = len(completion_token_ids)
+        if prompt_len < 4 or output_len < 4:
+            # Prune too short sequences.
+            continue
+        if prompt_len > 1024 or prompt_len + output_len > 2048:
+            # Prune too long sequences.
+            continue
+        filtered_dataset.append((prompt_token_ids))
+
+    return filtered_dataset
+
 def read_or_create_prompts(
     dataset_path: str,
     vocab_size: int,
     max_input_len: int,
     n: int,
+    tokenizer: Optional[PreTrainedTokenizerBase],
+    mimic_throughput_sample: bool = False,
 ) -> list[list[int]]:
     if dataset_path: 
         file_ext = dataset_path.split(".")[-1]
@@ -49,14 +87,19 @@ def read_or_create_prompts(
                 reader = pd.read_pickle
             case "csv":
                 reader = pd.read_csv
+            case "json":
+                reader = pd.read_json
             case _:
                 raise NotImplementedError("UNSUPPORTED_DATASET_TYPE")
         df = reader(dataset_path)
-
         # team NAVER requested to report benchmark data excluding the input 
         # tokenization thus we tokenize our inputs in advance to exclude it
-        assert "tok_inputs" in df.columns
-        prompt_tok_ids = df["tok_inputs"][:n].apply(np.ndarray.tolist).to_list()
+        if mimic_throughput_sample:
+            assert tokenizer
+            prompt_tok_ids = sample_requests(df, n, tokenizer)
+        else:
+            assert "tok_inputs" in df.columns
+            prompt_tok_ids = df["tok_inputs"][:n].apply(np.ndarray.tolist).to_list()
     else:
         # create list of random tok ids of fixed length when dataset isn't given
         randint_kwargs = dict(
@@ -67,7 +110,7 @@ def read_or_create_prompts(
         randint = functools.partial(torch.randint, **randint_kwargs)
         prompt_tok_ids = [randint().tolist() for _ in range(n)]
         assert all(len(tok_ids) <= max_input_len for tok_ids in prompt_tok_ids)
-    
+
     return prompt_tok_ids
     
 
@@ -194,7 +237,9 @@ def main(args: argparse.Namespace):
         args.dataset, 
         tokenizer.vocab_size,
         args.max_input_len,
-        args.num_requests
+        args.num_requests,
+        tokenizer,
+        args.mimic_throughput_sample,
     )
 
     if args.json_template:
@@ -283,6 +328,9 @@ if __name__ == "__main__":
                              "unless random-lora flag is set.")
     parser.add_argument("--random-lora", action='store_true',
                         help="Shuffle lora-pattern randomly.")
+    parser.add_argument("--mimic-throughput-sample", action='store_true',
+                        help="Mimic request sampling process of "
+                             "benchmark_throughput.py script.")
 
     args = parser.parse_args()
 
