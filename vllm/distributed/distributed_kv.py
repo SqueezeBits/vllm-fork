@@ -218,7 +218,6 @@ class DistributedKVCoordinator(GroupCoordinator):
         '''
             Receive an input hash, and check if it is already cached
         '''
-        self.input_hash_to_kv_sending_requests_lock.acquire()
 
         input_hash_tensor = torch.tensor([0], device="cpu").long()
         torch.distributed.recv(input_hash_tensor,
@@ -226,8 +225,10 @@ class DistributedKVCoordinator(GroupCoordinator):
                                self.cpu_group,
                                tag=DISTRIBUTED_KV_GLOO_TAG)
         input_hash = input_hash_tensor.item()
+
         # a new input hash comes in, see if it is already cached
         logger.debug('Successfully received input hash %d', input_hash)
+        self.input_hash_to_kv_sending_requests_lock.acquire()
         if input_hash not in self.input_hash_to_kv_sending_requests:
             logger.warning(
             f"The KV cache of {input_hash} does not exist. "\
@@ -249,7 +250,7 @@ class DistributedKVCoordinator(GroupCoordinator):
                                    self.target_rank_for_send,
                                    self.cpu_group,
                                    tag=DISTRIBUTED_KV_GLOO_TAG)
-            return input_hash
+        return input_hash
 
     def kv_cache_send_loop(self):
 
@@ -263,6 +264,8 @@ class DistributedKVCoordinator(GroupCoordinator):
             # wait for a new input hash
             # this function will acquire the lock
             input_hash = self.recv_input_hash()
+
+
 
             if input_hash is None:
                 self.input_hash_to_kv_sending_requests_lock.release()
