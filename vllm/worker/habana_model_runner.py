@@ -327,6 +327,8 @@ class ModelInputForHPUWithSamplingMetadata(ModelInputForHPU):
     # used by the driver worker.
     is_prompt: Optional[bool] = None
 
+    input_hash_tensor: Optional[torch.Tensor] = None
+
     def as_broadcastable_tensor_dict(self) -> Dict[str, Any]:
         tensor_dict = {
             "input_tokens": self.input_tokens,
@@ -1495,10 +1497,17 @@ class HabanaModelRunner(
             assert model_input.attn_metadata is not None
             is_prompt = model_input.attn_metadata.is_prompt
 
+        input_hash_tensor = torch.tensor(
+            [hash(next(iter(s.seq_data.values())).prompt_token_ids) for s in seq_group_metadata_list],
+            device="cpu",
+            dtype=torch.long
+        )
+
         return dataclasses.replace(model_input,
                                    sampling_metadata=sampling_metadata,
                                    is_prompt=is_prompt,
-                                   virtual_engine=virtual_engine)
+                                   virtual_engine=virtual_engine,
+                                   input_hash_tensor=input_hash_tensor)
 
     def finish_measurements(self):
         from neural_compressor.torch.quantization import finalize_calibration
@@ -1568,15 +1577,12 @@ class HabanaModelRunner(
             dist_kv.IS_KV_DECODE_INSTANCE,
             not is_profile_run]):
 
-            hidden_states, bypass = dist_kv.recv_kv_caches_and_hidden_states(
+            hidden_states, bypass_model_exec = dist_kv.recv_kv_caches_and_hidden_states(
                 self.model.model,
                 model_input,
                 kv_caches,
             )
             htorch.core.mark_step()
-
-            if bypass:
-                bypass_model_exec = True
 
         if not bypass_model_exec:
             if self.is_driver_worker:

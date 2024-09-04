@@ -403,20 +403,20 @@ class LoggingStatLogger(StatLoggerBase):
                 last_log=self.last_local_log)
 
             # Log to stdout.
-            logger.info(
-                "Avg prompt throughput: %.1f tokens/s, "
-                "Avg generation throughput: %.1f tokens/s, "
-                "Running: %d reqs, Swapped: %d reqs, "
-                "Pending: %d reqs, GPU KV cache usage: %.1f%%, "
-                "CPU KV cache usage: %.1f%%.",
-                prompt_throughput,
-                generation_throughput,
-                stats.num_running_sys,
-                stats.num_swapped_sys,
-                stats.num_waiting_sys,
-                stats.gpu_cache_usage_sys * 100,
-                stats.cpu_cache_usage_sys * 100,
-            )
+            # logger.info(
+            #     # "Avg prompt throughput: %.1f tokens/s, "
+            #     # "Avg generation throughput: %.1f tokens/s, "
+            #     "Running: %d reqs, Swapped: %d reqs, "
+            #     "Pending: %d reqs, GPU KV cache usage: %.1f%%, ",
+            #     # "CPU KV cache usage: %.1f%%.",
+            #     # prompt_throughput,
+            #     # generation_throughput,
+            #     stats.num_running_sys,
+            #     stats.num_swapped_sys,
+            #     stats.num_waiting_sys,
+            #     stats.gpu_cache_usage_sys * 100,
+            #     # stats.cpu_cache_usage_sys * 100,
+            # )
 
             if self.spec_decode_metrics is not None:
                 logger.info(

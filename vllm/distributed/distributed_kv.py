@@ -39,6 +39,7 @@ logger = init_logger(__name__)
 
 import logging
 
+import habana_frameworks.torch as htorch
 
 class RankFilter(logging.Filter):
 
@@ -157,18 +158,18 @@ class DistributedKVCoordinator(GroupCoordinator):
                 output[key] = output[key].contiguous()
 
             self.input_hash_to_kv_sending_requests[input_hash].append(
-                [self.send_tensor_dict, output, dst])
+                (self.send_tensor_dict, output, dst))
 
         else:
 
             assert isinstance(tensor, torch.Tensor)
 
-            self.input_hash_to_kv_sending_requests[input_hash].append([
+            self.input_hash_to_kv_sending_requests[input_hash].append((
                 send_func,
                 # use clone to make sure the tensor is contiguous
                 tensor.clone(),
                 dst
-            ])
+            ))
 
     def kv_cache_recv(
             self,
@@ -269,11 +270,12 @@ class DistributedKVCoordinator(GroupCoordinator):
             while True:
                 request = self.input_hash_to_kv_sending_requests[
                     input_hash].popleft()
-                # An empty request: the KV cahe of one request are all sent
-                if request == []:
+                # An empty request: the KV cache of one request are all sent
+                if len(request) == 0:
                     break
 
-                request[0](*request[1:])
+                send_func, payload, dst = request
+                send_func(payload, dst)
 
             if len(self.input_hash_to_kv_sending_requests[input_hash]) == 0:
                 logger.debug('Finish input hash %d, free GPU memory...',
@@ -327,15 +329,18 @@ def send_kv_caches_and_hidden_states(
     # lists are not hashable while tuples are
     seq_lens = model_input.seq_lens
     slot_mappings = model_input.attn_metadata.slot_mapping
-    input_tokens_tuples = [tuple(t) for t in model_input.input_tokens.tolist()]
+    input_hash_list = model_input.input_hash_tensor.tolist()
+
 
     # Assumption: current batch is all-prefill requests
     ps.get_disagg_group().input_hash_to_kv_sending_requests_lock.acquire()
 
-    for idx, seq_len in enumerate(seq_lens):
+    for idx in range(model_input.real_batch_size):
+        seq_len = seq_lens[idx]
         slot_mapping = slot_mappings[idx]
-        input_tokens_tuple = input_tokens_tuples[idx]
-        input_hash = hash(input_tokens_tuple)
+        effective_slots = slot_mapping[:seq_len]
+        input_hash = input_hash_list[idx]
+        htorch.core.mark_step()
 
         for i in range(model_executable.model.start_layer, 
                        model_executable.model.end_layer):
@@ -346,7 +351,6 @@ def send_kv_caches_and_hidden_states(
             key_cache = kv_cache[0].reshape(-1, num_heads, head_size)
             value_cache = kv_cache[1].reshape(-1, num_heads, head_size)
 
-            effective_slots = slot_mapping[:seq_len]
 
             ps.get_disagg_group().kv_cache_send(
                 input_hash, key_cache[effective_slots])
@@ -357,6 +361,8 @@ def send_kv_caches_and_hidden_states(
             input_hash,
             hidden_or_intermediate_states,
             is_hidden=True)
+        
+        htorch.core.mark_step()
         ps.get_disagg_group().kv_cache_send_ready(input_hash)
 
     ps.get_disagg_group().input_hash_to_kv_sending_requests_lock.release()
@@ -377,7 +383,7 @@ def recv_kv_caches_and_hidden_states(
     # lists are not hashable while tuples are
     seq_lens = model_input.seq_lens
     slot_mappings = model_input.attn_metadata.slot_mapping
-    input_tokens_tuples = [tuple(t) for t in model_input.input_tokens.tolist()]
+    input_hash_list = model_input.input_hash_tensor
 
     # Assumption: current batch is all-prefill requests
     hidden_or_intermediate_states_for_one_req = []
@@ -386,8 +392,7 @@ def recv_kv_caches_and_hidden_states(
     # FIXME(Kuntai): This impl assumes that all requests are prefill.
     for idx, seq_len in enumerate(seq_lens):
         slot_mapping = slot_mappings[idx]
-        input_tokens_tuple = input_tokens_tuples[idx]
-        input_hash = hash(input_tokens_tuple)
+        input_hash = input_hash_list[idx]
 
         # notify the prefill instance to start sending KVs associated with input_hash
         contain = ps.get_disagg_group().kv_cache_recv_start(input_hash)

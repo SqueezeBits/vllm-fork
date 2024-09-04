@@ -30,12 +30,14 @@ class RequestLogger:
             if prompt is not None:
                 prompt = prompt[:max_log_len]
 
-            if prompt_token_ids is not None:
-                prompt_token_ids = prompt_token_ids[:max_log_len]
+            # if prompt_token_ids is not None:
+                # prompt_token_ids = prompt_token_ids[:max_log_len]
 
-        logger.info(
-            "Received request %s: prompt: %r, "
-            "params: %s, prompt_token_ids: %s, "
-            "lora_request: %s, prompt_adapter_request: %s.", request_id,
-            prompt, params, prompt_token_ids, lora_request,
-            prompt_adapter_request)
+        # logger.info(
+        #     "Received request %s: prompt: %r, "
+        #     "params: %s, prompt_token_ids: %s, "
+        #     "lora_request: %s, prompt_adapter_request: %s.", request_id,
+        #     prompt, params, prompt_token_ids, lora_request,
+        #     prompt_adapter_request)
+
+        logger.info(f"Received request: {hash(tuple(prompt_token_ids))}")
