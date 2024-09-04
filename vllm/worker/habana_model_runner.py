@@ -1638,16 +1638,20 @@ class HabanaModelRunner(
         if not self.is_driver_worker:
             return []
 
-        # Sample the next token.
-        with self.profiler.record_event(
-                'internal', ('sample_'
-                             f'{"prompt" if is_prompt else "decode"}_'
-                             f'bs{batch_size}_'
-                             f'seq{seq_len}')):
-            output = self.model.sample(
-                logits=logits,
-                sampling_metadata=sampling_metadata,
-            )
+        try:
+            # Sample the next token.
+            with self.profiler.record_event(
+                    'internal', ('sample_'
+                                f'{"prompt" if is_prompt else "decode"}_'
+                                f'bs{batch_size}_'
+                                f'seq{seq_len}')):
+                output = self.model.sample(
+                    logits=logits,
+                    sampling_metadata=sampling_metadata,
+                )
+        except:
+            import pdb; pdb.set_trace()
+
         output.outputs = output.outputs[:real_batch_size]
         htorch.core.mark_step()
 

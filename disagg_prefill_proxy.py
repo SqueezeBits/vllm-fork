@@ -21,7 +21,7 @@ def handle_completion_request():
     prefill_request = dict(**original_request_data)
 
     hash = get_hash(original_request_data["prompt"])
-    print(f"[{hash}] received request")
+    # print(f"[{hash}] received request") 
 
 
     # change max_tokens = 1 to let it only do prefill

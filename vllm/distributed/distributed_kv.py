@@ -52,8 +52,8 @@ class RankFilter(logging.Filter):
         return rank % 4 == 0
 
 
-for handler in logger.handlers:
-    handler.addFilter(RankFilter())
+# for handler in logger.handlers:
+#     handler.addFilter(RankFilter())
 
 
 class DistributedKVCoordinator(GroupCoordinator):
@@ -218,6 +218,8 @@ class DistributedKVCoordinator(GroupCoordinator):
         '''
             Receive an input hash, and check if it is already cached
         '''
+        self.input_hash_to_kv_sending_requests_lock.acquire()
+
         input_hash_tensor = torch.tensor([0], device="cpu").long()
         torch.distributed.recv(input_hash_tensor,
                                self.target_rank_for_recv,
@@ -225,7 +227,6 @@ class DistributedKVCoordinator(GroupCoordinator):
                                tag=DISTRIBUTED_KV_GLOO_TAG)
         input_hash = input_hash_tensor.item()
         # a new input hash comes in, see if it is already cached
-        self.input_hash_to_kv_sending_requests_lock.acquire()
         logger.debug('Successfully received input hash %d', input_hash)
         if input_hash not in self.input_hash_to_kv_sending_requests:
             logger.warning(
@@ -262,6 +263,7 @@ class DistributedKVCoordinator(GroupCoordinator):
             # wait for a new input hash
             # this function will acquire the lock
             input_hash = self.recv_input_hash()
+
             if input_hash is None:
                 self.input_hash_to_kv_sending_requests_lock.release()
                 continue
@@ -288,7 +290,6 @@ class DistributedKVCoordinator(GroupCoordinator):
                     input_hash)
 
             self.input_hash_to_kv_sending_requests_lock.release()
-
 
     def kv_cache_send_ready(self, input_hash: int):
 
@@ -333,7 +334,9 @@ def send_kv_caches_and_hidden_states(
 
 
     # Assumption: current batch is all-prefill requests
+    print("attempt lock aquire")
     ps.get_disagg_group().input_hash_to_kv_sending_requests_lock.acquire()
+    print("lock aquired")
 
     for idx in range(model_input.real_batch_size):
         seq_len = seq_lens[idx]
@@ -390,7 +393,8 @@ def recv_kv_caches_and_hidden_states(
 
     # enumerate different requests
     # FIXME(Kuntai): This impl assumes that all requests are prefill.
-    for idx, seq_len in enumerate(seq_lens):
+    for idx in range(model_input.real_batch_size):
+        seq_len = seq_lens[idx]
         slot_mapping = slot_mappings[idx]
         input_hash = input_hash_list[idx]
 
@@ -433,6 +437,10 @@ def recv_kv_caches_and_hidden_states(
                                                 kv_cache[0].dtype,
                                                 is_hidden=True))
 
+    for i in range(model_input.batch_size_padded - model_input.real_batch_size):
+        hidden_or_intermediate_states_for_one_req.append(hidden_or_intermediate_states_for_one_req[0])
+
+
     if not bypass_model_exec:
         # Some of the KV cache is not retrieved
         # so we need to recompute the hidden state
@@ -457,4 +465,6 @@ def recv_kv_caches_and_hidden_states(
         hidden_or_intermediate_states = IntermediateTensors(result_its)
 
     logger.debug("[rank%d]: KV recv DONE.", torch.distributed.get_rank())
+
+
     return hidden_or_intermediate_states, bypass_model_exec
