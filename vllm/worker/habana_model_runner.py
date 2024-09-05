@@ -1562,7 +1562,6 @@ class HabanaModelRunner(
                 "warmup_mode": warmup_mode
             })
 
-        htorch.core.mark_step()
 
         # check if the current run is profiling
         is_profile_run = (kv_caches is None) or (kv_caches[0] is None)
@@ -1576,13 +1575,11 @@ class HabanaModelRunner(
             is_prompt,
             dist_kv.IS_KV_DECODE_INSTANCE,
             not is_profile_run]):
-
             hidden_states, bypass_model_exec = dist_kv.recv_kv_caches_and_hidden_states(
                 self.model.model,
                 model_input,
                 kv_caches,
             )
-            htorch.core.mark_step()
 
         if not bypass_model_exec:
             if self.is_driver_worker:
@@ -1614,15 +1611,12 @@ class HabanaModelRunner(
             is_prompt,
             dist_kv.IS_KV_PREFILL_INSTANCE,
             not is_profile_run]):
-
-            htorch.core.mark_step()
             dist_kv.send_kv_caches_and_hidden_states(
                 self.model.model,
                 model_input,
                 kv_caches,
                 hidden_states,
             )
-            htorch.core.mark_step()
 
         # Compute the logits.
         with self.profiler.record_event(
@@ -1638,19 +1632,18 @@ class HabanaModelRunner(
         if not self.is_driver_worker:
             return []
 
-        try:
-            # Sample the next token.
-            with self.profiler.record_event(
-                    'internal', ('sample_'
-                                f'{"prompt" if is_prompt else "decode"}_'
-                                f'bs{batch_size}_'
-                                f'seq{seq_len}')):
-                output = self.model.sample(
-                    logits=logits,
-                    sampling_metadata=sampling_metadata,
-                )
-        except:
-            import pdb; pdb.set_trace()
+
+        # Sample the next token.
+        with self.profiler.record_event(
+                'internal', ('sample_'
+                            f'{"prompt" if is_prompt else "decode"}_'
+                            f'bs{batch_size}_'
+                            f'seq{seq_len}')):
+            output = self.model.sample(
+                logits=logits,
+                sampling_metadata=sampling_metadata,
+            )
+
 
         output.outputs = output.outputs[:real_batch_size]
         htorch.core.mark_step()

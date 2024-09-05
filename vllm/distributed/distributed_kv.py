@@ -11,7 +11,6 @@ Workflow:
 from typing import List, Optional, Tuple, Union
 from collections import defaultdict, deque
 from threading import Lock
-from copy import deepcopy
 import contextlib
 import time
 import threading
@@ -24,6 +23,8 @@ from vllm.distributed.group_coordinator import GroupCoordinator
 from vllm.logger import init_logger
 import vllm.distributed.parallel_state as ps
 from vllm.sequence import IntermediateTensors
+
+from vllm.hpu.utils import with_mark_steps
 
 assert envs.VLLM_DISAGG_PREFILL_ROLE in [None, "prefill", "decode"], \
     "VLLM_DISAGG_PREFILL_ROLE can only be prefill or decode."
@@ -42,7 +43,6 @@ import logging
 import habana_frameworks.torch as htorch
 
 class RankFilter(logging.Filter):
-
     def filter(self, record):
         # Only log if rank is 4
         rank = 1
@@ -52,8 +52,8 @@ class RankFilter(logging.Filter):
         return rank % 4 == 0
 
 
-# for handler in logger.handlers:
-#     handler.addFilter(RankFilter())
+for handler in logger.handlers:
+    handler.addFilter(RankFilter())
 
 
 class DistributedKVCoordinator(GroupCoordinator):
@@ -63,7 +63,6 @@ class DistributedKVCoordinator(GroupCoordinator):
     Target use cases:
         1. Disaggregated prefill
         2. Remote KV cache storage
-        
     """
 
     def __init__(
@@ -71,30 +70,19 @@ class DistributedKVCoordinator(GroupCoordinator):
         group_ranks: List[List[int]],
         local_rank: int,
         torch_distributed_backend: Union[str, Backend],
-        # DO NOT use pynccl here
-        # Pynccl send is non-blocking
-        # and it's possible that the memory is freed before the data being sent
-        # which may happen at high qps
-        use_pynccl: bool = False,
         use_custom_allreduce: bool = False,
-        use_tpu_communicator: bool = True,
         use_message_queue_broadcaster: bool = False,
-        use_cpu_comm_for_sanity_check: bool = False,
     ):
-
         super().__init__(
             group_ranks,
             local_rank,
             torch_distributed_backend,
-            use_pynccl,
+            False, # use pynccl
             use_custom_allreduce,
-            use_tpu_communicator,
+            False, # use TPU communicator
+            True, # use HPU communicator
             use_message_queue_broadcaster,
         )
-
-        # if turned on, will use CPU-based communication to perform a series of sanity check.
-        # but it adds ~5ms delay, so please turn it off in performance-demanding usecases (e.g. disaggregated prefill)
-        self.use_cpu_comm_for_sanity_check = use_cpu_comm_for_sanity_check
 
         # use a threadpool to buffer send request in disaggregated prefill
         self.input_hash_to_kv_sending_requests = defaultdict(deque)
@@ -107,92 +95,31 @@ class DistributedKVCoordinator(GroupCoordinator):
 
         torch.set_default_device(self.device)
 
-    def debug_send(self,
-                   tensor: torch.Tensor,
-                   dst: Optional[int] = None) -> None:
-        """Sends a tensor to the destination rank in a non-blocking way"""
-        """Will send several metadata. Useful for debugging."""
-        """NOTE: `dst` is the local rank of the destination rank."""
-
-        self.send_tensor_dict(
-            {
-                "tensor": tensor,
-                "mean": tensor.float().mean(),
-                "shape": tensor.shape
-            }, dst)
-
-    def debug_recv(self,
-                   size: torch.Size,
-                   dtype: torch.dtype,
-                   src: Optional[int] = None) -> torch.Tensor:
-        """Receives a tensor from the src rank."""
-        """NOTE: `src` is the local rank of the destination rank."""
-
-        result = self.recv_tensor_dict(src)
-        tensor = result["tensor"]
-        assert torch.allclose(result["mean"], tensor.float().mean())
-        assert result["shape"] == tensor.shape
-        assert result[
-            "shape"] == size, f"The shape sent by sender is {result['shape']} but trying to receive {size}"
-        return tensor
-
+    @with_mark_steps
     def kv_cache_send(self,
                       input_hash: int,
-                      tensor: Union[torch.Tensor, IntermediateTensors],
-                      is_hidden: bool = False,
+                      tensor: torch.Tensor,
                       dst: Optional[int] = None) -> None:
         """Push the KV cache send request into the send buffer"""
         """NOTE: `dst` is the local rank of the destination rank."""
 
-        if self.use_cpu_comm_for_sanity_check:
-            send_func = self.debug_send
-        else:
-            send_func = self.send
+        self.input_hash_to_kv_sending_requests[input_hash].append((
+            self.send, tensor.clone(), dst))
 
-        if is_hidden and not ps.get_pp_group().is_last_rank:
-
-            assert isinstance(tensor, IntermediateTensors)
-
-            output = deepcopy(tensor.tensors)
-            for key in output:
-                output[key] = output[key].contiguous()
-
-            self.input_hash_to_kv_sending_requests[input_hash].append(
-                (self.send_tensor_dict, output, dst))
-
-        else:
-
-            assert isinstance(tensor, torch.Tensor)
-
-            self.input_hash_to_kv_sending_requests[input_hash].append((
-                send_func,
-                # use clone to make sure the tensor is contiguous
-                tensor.clone(),
-                dst
-            ))
-
+    @with_mark_steps
     def kv_cache_recv(
             self,
             size: torch.Size,
             dtype: torch.dtype,
-            is_hidden: bool = False,
             src: Optional[int] = None
-    ) -> Union[torch.Tensor, IntermediateTensors]:
+    ) -> torch.Tensor:
         """Receives a tensor from the src rank (blocking)."""
         """This API should be used together with `push`"""
         """NOTE: `src` is the local rank of the destination rank."""
 
-        if self.use_cpu_comm_for_sanity_check:
-            recv_func = self.debug_recv
-        else:
-            recv_func = self.recv
-
-        if is_hidden and not ps.get_pp_group().is_last_rank:
-            tensor = IntermediateTensors(self.recv_tensor_dict(src))
-        else:
-            tensor = recv_func(size, dtype, src)
-
+        tensor = self.recv(size, dtype, src)
         return tensor
+
 
     def send_input_hash(self, input_hash: int) -> int:
 
@@ -255,6 +182,7 @@ class DistributedKVCoordinator(GroupCoordinator):
     def kv_cache_send_loop(self):
 
         while True:
+            htorch.core.mark_step()
             logger.debug(
                 '[rank%d]: Waiting for input hash from rank %d, my keys are %s',
                 torch.distributed.get_rank(),
@@ -265,16 +193,14 @@ class DistributedKVCoordinator(GroupCoordinator):
             # this function will acquire the lock
             input_hash = self.recv_input_hash()
 
-
-
             if input_hash is None:
                 self.input_hash_to_kv_sending_requests_lock.release()
                 continue
 
             # execute corresponding kv cache sending jobs in request queue
             while True:
-                request = self.input_hash_to_kv_sending_requests[
-                    input_hash].popleft()
+                request = self.input_hash_to_kv_sending_requests[input_hash].popleft()
+        
                 # An empty request: the KV cache of one request are all sent
                 if len(request) == 0:
                     break
@@ -292,19 +218,21 @@ class DistributedKVCoordinator(GroupCoordinator):
                     'there are two jobs with identical input.',
                     input_hash)
 
+            htorch.core.mark_step()
             self.input_hash_to_kv_sending_requests_lock.release()
 
+    @with_mark_steps
     def kv_cache_send_ready(self, input_hash: int):
+        # append an empty list to separate requests
+        # as there might be identical requests, that has the same input hash
+        self.input_hash_to_kv_sending_requests[input_hash].append([])
+        logger.debug(f'Buffered input hash {input_hash}')
 
         if self.kv_sending_thread is None:
             self.kv_sending_thread = threading.Thread(
                 target=self.kv_cache_send_loop)
             self.kv_sending_thread.start()
 
-        # append an empty list to separate requests
-        # as there might be identical requests, that has the same input hash
-        self.input_hash_to_kv_sending_requests[input_hash].append([])
-        logger.debug(f'Buffered input hash {input_hash}')
 
     def kv_cache_recv_start(self, input_hash: int):
         # notify the kv cache sender with the input hash id
@@ -323,23 +251,20 @@ class DistributedKVCoordinator(GroupCoordinator):
                 self.input_hash_to_kv_sending_requests_lock.release()
                 break
 
-
+@with_mark_steps
 def send_kv_caches_and_hidden_states(
     model_executable: torch.nn.Module,
     model_input: "ModelInputForGPUWithSamplingMetadata",
     kv_caches: List[torch.Tensor],
-    hidden_or_intermediate_states: Union[torch.Tensor, IntermediateTensors],
+    hidden_states: torch.Tensor,
 ) -> None:
     # lists are not hashable while tuples are
     seq_lens = model_input.seq_lens
     slot_mappings = model_input.attn_metadata.slot_mapping
     input_hash_list = model_input.input_hash_tensor.tolist()
 
-
     # Assumption: current batch is all-prefill requests
-    print("attempt lock aquire")
     ps.get_disagg_group().input_hash_to_kv_sending_requests_lock.acquire()
-    print("lock aquired")
 
     for idx in range(model_input.real_batch_size):
         seq_len = seq_lens[idx]
@@ -357,18 +282,14 @@ def send_kv_caches_and_hidden_states(
             key_cache = kv_cache[0].reshape(-1, num_heads, head_size)
             value_cache = kv_cache[1].reshape(-1, num_heads, head_size)
 
-
             ps.get_disagg_group().kv_cache_send(
                 input_hash, key_cache[effective_slots])
             ps.get_disagg_group().kv_cache_send(
                 input_hash, value_cache[effective_slots])
 
         ps.get_disagg_group().kv_cache_send(
-            input_hash,
-            hidden_or_intermediate_states,
-            is_hidden=True)
+            input_hash, hidden_states)
         
-        htorch.core.mark_step()
         ps.get_disagg_group().kv_cache_send_ready(input_hash)
 
     ps.get_disagg_group().input_hash_to_kv_sending_requests_lock.release()
@@ -377,12 +298,12 @@ def send_kv_caches_and_hidden_states(
 
     logger.debug("[rank%d]: KV send DONE.", torch.distributed.get_rank())
 
-
+@with_mark_steps
 def recv_kv_caches_and_hidden_states(
     model_executable: torch.nn.Module,
     model_input: "ModelInputForGPUWithSamplingMetadata",
     kv_caches: List[torch.Tensor]
-) -> Tuple[Union[torch.Tensor, IntermediateTensors], bool]:
+) -> Tuple[torch.Tensor, bool]:
 
     bypass_model_exec = True
 
@@ -392,7 +313,7 @@ def recv_kv_caches_and_hidden_states(
     input_hash_list = model_input.input_hash_tensor
 
     # Assumption: current batch is all-prefill requests
-    hidden_or_intermediate_states_for_one_req = []
+    hidden_states_for_one_req = []
 
     # enumerate different requests
     # FIXME(Kuntai): This impl assumes that all requests are prefill.
@@ -434,14 +355,13 @@ def recv_kv_caches_and_hidden_states(
             key_cache[effective_slots] = key
             value_cache[effective_slots] = value
             
-        hidden_or_intermediate_states_for_one_req.append(
+        hidden_states_for_one_req.append(
             ps.get_disagg_group().kv_cache_recv(torch.Size(
                 [1, model_executable.config.hidden_size]),
-                                                kv_cache[0].dtype,
-                                                is_hidden=True))
+                                                kv_cache[0].dtype))
 
     for i in range(model_input.batch_size_padded - model_input.real_batch_size):
-        hidden_or_intermediate_states_for_one_req.append(hidden_or_intermediate_states_for_one_req[0])
+        hidden_states_for_one_req.append(hidden_states_for_one_req[0])
 
 
     if not bypass_model_exec:
@@ -450,24 +370,8 @@ def recv_kv_caches_and_hidden_states(
         return [], bypass_model_exec
 
     # concatenate hidden states from different requests
-    if isinstance(hidden_or_intermediate_states_for_one_req[0], torch.Tensor):
-        hidden_or_intermediate_states = torch.cat(
-            hidden_or_intermediate_states_for_one_req, dim=0)
-    else:
-        # concat the IntermediateTensors
-        keys = list(
-            hidden_or_intermediate_states_for_one_req[0].tensors.keys())
-        result_its = {}
-
-        for key in keys:
-            result_its[key] = []
-            for its in hidden_or_intermediate_states_for_one_req:
-                result_its[key].append(its[key])
-            result_its[key] = torch.cat(result_its[key], dim=0)
-
-        hidden_or_intermediate_states = IntermediateTensors(result_its)
-
+    hidden_states = torch.cat(hidden_states_for_one_req, dim=0)
+    
     logger.debug("[rank%d]: KV recv DONE.", torch.distributed.get_rank())
 
-
-    return hidden_or_intermediate_states, bypass_model_exec
+    return hidden_states, bypass_model_exec
