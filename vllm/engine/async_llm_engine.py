@@ -595,6 +595,7 @@ class AsyncLLMEngine:
         # Put the outputs into the corresponding streams.
         finished = True
         for request_output in request_outputs:
+            request_output.running_bs = self.engine.mean_running_bs
             self._request_tracker.process_request_output(
                 request_output, verbose=self.log_requests)
             finished = finished and request_output.finished
@@ -993,3 +994,7 @@ class AsyncLLMEngine:
                     logger_name=logger_name))
         else:
             self.engine.remove_logger(logger_name=logger_name)
+    
+    def reset_running_bs(self) -> None:
+        self.engine.reset_running_bs()
+
