@@ -354,6 +354,10 @@ class LLMEngine:
                     self.get_tokenizer_for_seq,
                 ),
             ))
+        # For logging mean running batchsize
+        self.decode_iter = 0
+        self.mean_running_bs = 0
+        self.last_running = 0
 
     def _initialize_kv_caches(self) -> None:
         """Initialize the KV cache in the worker(s).
@@ -852,7 +856,24 @@ class LLMEngine:
         for seq_group in ignored_seq_groups:
             request_output = RequestOutputFactory.create(seq_group)
             request_outputs.append(request_output)
+
+        if len(seq_group_metadata_list) > 0:
+            is_decode = not seq_group_metadata_list[0].is_prompt
+            if is_decode:
+                self.mean_running_bs = (self.decode_iter * self.mean_running_bs + self.last_running) / (self.decode_iter + 1)
+                self.decode_iter += 1
+        # Current self.scheduler.running corresponds to
+        # the running states after finishing current iteration.
+        # So, get the last running states to get current effective batch size.
+        assert len(self.scheduler) == 1
+        self.last_running = len(self.scheduler[0].running)
+
         return request_outputs
+    
+    def reset_running_bs(self):
+        self.decode_iter = 0
+        self.mean_running_bs = 0
+        self.last_running = 0
 
     def finish_measurements(self):
         self.model_executor.finish_measurements()

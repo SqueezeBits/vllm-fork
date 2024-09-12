@@ -20,16 +20,15 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase
 @dataclass
 class RequestResult():
     num_input_tokens: int
-
     num_generated_tokens: int
     generated_text: str
-
     arrival_time: float
     first_scheduled_time: float
     first_token_time: float
     finished_time: float
-    
+    waiting_time: float
     client_side_total_latency: float
+    mean_running_bs: float
 
 results: list[RequestResult] = []
 
@@ -135,6 +134,10 @@ def get_model_id(url: str):
     return response["data"][0]["id"]
 
 
+def reset_running_bs(url: str):
+    response = requests.get(url).json()
+
+
 async def send_request(
     url: str,
     token_ids: list[int],
@@ -176,7 +179,9 @@ async def send_request(
         first_scheduled_time=result["metrics"][0]["first_scheduled_time"],
         first_token_time=result["metrics"][0]["first_token_time"],
         finished_time=result["metrics"][0]["finished_time"],
-        client_side_total_latency=request_end_time - request_start_time
+        waiting_time=result["metrics"][0]["time_in_queue"],
+        client_side_total_latency=request_end_time - request_start_time,
+        mean_running_bs=result["mean_running_bs"][0]
     ))
     
 
@@ -256,6 +261,7 @@ def main(args: argparse.Namespace):
     benchmark_end_time = time.perf_counter()
     benchmark_time = benchmark_end_time - benchmark_start_time
     df = pd.DataFrame(data=results)
+    reset_running_bs(url + "/reset")
 
     total_input_tokens = df['num_input_tokens'].sum()
     total_generated_tokens = df['num_generated_tokens'].sum()
@@ -264,6 +270,7 @@ def main(args: argparse.Namespace):
     print(f"\tTotal input tokens: {total_input_tokens}")
     print(f"\tTotal generated tokens: {total_generated_tokens}")
     print(f"\tTotal latency: {benchmark_time} sec")
+    print(f"\tMean running batchsize: {df['mean_running_bs'].mean()}")
     
     # team NAVER requested to report TTFT data excluding the queueing time
     # so we use first_scheduled_time instead of arrival_time
@@ -281,7 +288,7 @@ def main(args: argparse.Namespace):
     print(f"\tmean: {tpot.mean()} msec")
     print(f"\tmax: {tpot.max()} msec")  
 
-    out_path = model_id.split("/")[-1]
+    out_path = model_id.strip("/").split("/")[-1]
     out_path += f"_qps_{args.request_rate}"
     out_path += f"_total_{benchmark_time}"
     out_path += f"_in_{total_input_tokens}"
