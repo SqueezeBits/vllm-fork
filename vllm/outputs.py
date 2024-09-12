@@ -88,6 +88,7 @@ class RequestOutput:
         finished: bool,
         metrics: Optional[RequestMetrics] = None,
         lora_request: Optional[LoRARequest] = None,
+        running_bs: Optional[int] = None
     ) -> None:
         self.request_id = request_id
         self.prompt = prompt
@@ -97,6 +98,7 @@ class RequestOutput:
         self.finished = finished
         self.metrics = metrics
         self.lora_request = lora_request
+        self.running_bs = running_bs
 
     @classmethod
     def from_seq_group(cls, seq_group: SequenceGroup) -> "RequestOutput":

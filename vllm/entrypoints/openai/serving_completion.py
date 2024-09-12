@@ -410,8 +410,10 @@ class OpenAIServingCompletion(OpenAIServing):
             model=model_name,
             choices=choices,
             usage=usage,
-            metrics=[final_res.metrics for final_res in final_res_batch]
+            metrics=[final_res.metrics for final_res in final_res_batch],
+            mean_running_bs=[final_res.running_bs for final_res in final_res_batch]
         )
+
 
     def _create_completion_logprobs(
         self,

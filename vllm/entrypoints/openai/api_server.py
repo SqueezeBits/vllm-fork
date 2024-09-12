@@ -89,6 +89,12 @@ async def health() -> Response:
     return Response(status_code=200)
 
 
+@router.get("/reset")
+async def reset_running_bs():
+    openai_serving_completion.engine.reset_running_bs()
+    return JSONResponse(content={})
+
+
 @router.post("/tokenize")
 async def tokenize(request: TokenizeRequest):
     generator = await openai_serving_tokenization.create_tokenize(request)

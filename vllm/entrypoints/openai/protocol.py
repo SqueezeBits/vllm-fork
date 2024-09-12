@@ -512,6 +512,7 @@ class CompletionResponse(OpenAIBaseModel):
     choices: List[CompletionResponseChoice]
     usage: UsageInfo
     metrics: List[RequestMetrics]
+    mean_running_bs: List[float]
 
 
 class CompletionResponseStreamChoice(OpenAIBaseModel):
