@@ -21,7 +21,6 @@ from functools import lru_cache
 from typing import Callable, DefaultDict, Dict, List, Union
 
 import torch
-from outlines.caching import cache
 from outlines.fsm.guide import CFGGuide, Generate, Guide, RegexGuide, Write
 from outlines.fsm.json_schema import build_regex_from_schema
 from pydantic import BaseModel
@@ -59,9 +58,11 @@ class BaseLogitsProcessor:
             raise TypeError(
                 f"Unsupported instruction type {type(instruction)}")
 
-        mask = torch.ones((scores.shape[-1], ), device=scores.device, dtype=torch.bool)
+        mask = torch.full((scores.shape[-1], ),
+                          -math.inf,
+                          device=scores.device)
         mask[allowed_tokens] = 0
-        scores.masked_fill_(mask, -math.inf)
+        scores = scores.add(mask)
         return scores
 
 
