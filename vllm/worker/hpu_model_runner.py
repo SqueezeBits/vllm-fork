@@ -853,10 +853,10 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             if lora_id > 0:
                 lora_requests.add(seq_group_metadata.lora_request)
 
-            lora_index_mapping += [lora_id] * (max_prompt_len - context_len)
+            lora_index_mapping += [lora_id] * max_prompt_len
             lora_prompt_mapping.extend(
                 [lora_id] *
-                (max_prompt_len - context_len
+                (max_prompt_len
                  if seq_group_metadata.sampling_params.prompt_logprobs else 1))
 
         if any(context_lens):
