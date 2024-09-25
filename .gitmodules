@@ -1,0 +1,3 @@
+[submodule "hpu-extension"]
+	path = hpu-extension
+	url = https://github.com/SqueezeBits/vllm-hpu-extension.git
