@@ -135,6 +135,8 @@ def run_vllm(
     start = time.perf_counter()
     llm.generate(prompts, sampling_params, use_tqdm=True)
     end = time.perf_counter()
+    if quantization == "inc" and kv_cache_dtype != "fp8_inc":
+        llm.finish_measurements()
     return end - start
 
 

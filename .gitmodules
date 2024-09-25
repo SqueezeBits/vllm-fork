@@ -1,3 +1,6 @@
 [submodule "hpu-extension"]
 	path = hpu-extension
 	url = https://github.com/SqueezeBits/vllm-hpu-extension.git
+[submodule "neural-compressor"]
+	path = neural-compressor
+	url = https://github.com/SqueezeBits/neural-compressor.git
