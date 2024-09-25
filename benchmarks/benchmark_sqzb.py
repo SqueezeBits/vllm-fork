@@ -135,7 +135,7 @@ def get_model_id(url: str):
 
 
 def reset_running_bs(url: str):
-    response = requests.get(url).json()
+    requests.get(url).json()
 
 
 async def send_request(
@@ -295,7 +295,7 @@ def main(args: argparse.Namespace):
     out_path += f"_out_{total_generated_tokens}"
     out_path += "_LoRA" if args.lora_pattern else ""
     out_path += "_guided" if args.json_template else ""
-    out_path += f"_{args.dataset.split('/')[-1]}" if args.dataset else "_random"
+    out_path += f"_{args.dataset.split('/')[-1].split('.')[0]}" if args.dataset else "_random"
     out_path += f"_{args.num_requests}"
     out_path += ".pkl"
     
