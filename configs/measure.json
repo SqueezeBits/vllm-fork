@@ -1,0 +1,14 @@
+{
+    "mode": "MEASURE",
+    "observer": "maxabs",
+    "whitelist": {
+        "types": ["VLLMKVCache"],
+        "names": []
+    },
+    "blacklist": {
+        "types": [],
+        "names": []
+    },
+    "dump_stats_path": "./artifacts/artifact"
+}
+
