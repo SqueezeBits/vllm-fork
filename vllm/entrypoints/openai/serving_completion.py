@@ -93,7 +93,11 @@ class OpenAIServingCompletion(OpenAIServing):
                 prompt_adapter_request,
             ) = self._maybe_get_adapters(request)
 
-            tokenizer = await self.engine.get_tokenizer(lora_request)
+            # FIXME: we should use different tokenizers per lora like below
+            # tokenizer = await self.engine.get_tokenizer(lora_request)
+            # current cache logic in get_lora_tokenizer lacks the ability to 
+            # identify identical loras
+            tokenizer = await self.engine.get_tokenizer(lora_request=None)
 
             sampling_params = request.to_sampling_params(tokenizer)
             decoding_config = await self.engine.get_decoding_config()
