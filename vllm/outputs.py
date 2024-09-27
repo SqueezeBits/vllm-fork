@@ -376,3 +376,8 @@ class RequestOutputFactory:
         else:
             return RequestOutput.from_seq_group(seq_group, use_cache,
                                                 seq_id_to_seq_group)
+
+@dataclass
+class IterDataResponse:
+    num_iteration: int
+    batch_sizes: list[tuple[str, int]]

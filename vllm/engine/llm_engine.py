@@ -477,6 +477,10 @@ class LLMEngine:
 
         self.seq_id_to_seq_group: Dict[str, SequenceGroupBase] = {}
 
+        # Iteration information
+        self.num_iteration: int = 0
+        self.batch_sizes: list[tuple[str, int]] = []
+
     def _initialize_kv_caches(self) -> None:
         """Initialize the KV cache in the worker(s).
 
@@ -1002,6 +1006,13 @@ class LLMEngine:
         return sum(scheduler.get_num_unfinished_seq_groups()
                    for scheduler in self.scheduler)
 
+    def get_iteration_data(self) -> tuple[int, list[tuple[str, int]]]:
+        return self.num_iteration, self.batch_sizes
+
+    def clear_iteration_data(self) -> None:
+        self.num_iteration = 0
+        self.batch_sizes.clear()
+
     def has_unfinished_requests(self) -> bool:
         """Returns True if there are unfinished requests."""
         return any(scheduler.has_unfinished_seqs()
@@ -1424,8 +1435,15 @@ class LLMEngine:
                     virtual_engine, seq_group_metadata_list, scheduler_outputs,
                     allow_async_output_proc)
 
-        assert seq_group_metadata_list is not None
+        assert seq_group_metadata_list is not NotImplemented
         assert scheduler_outputs is not None
+
+        # log iteration data
+        if scheduler_outputs.running_queue_size:
+            self.num_iteration += 1
+            self.batch_sizes.append(
+                ('p', scheduler_outputs.num_prefill_groups) if scheduler_outputs.num_prefill_groups > 0 else ('d', len(seq_group_metadata_list))
+            )
 
         if not scheduler_outputs.is_empty():
             finished_requests_ids = self.scheduler[

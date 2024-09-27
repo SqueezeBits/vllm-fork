@@ -12,7 +12,7 @@ from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.outputs import (CompletionOutput, EmbeddingRequestOutput,
-                          RequestOutput)
+                          RequestOutput, IterDataResponse)
 from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sampling_params import BeamSearchParams, SamplingParams
@@ -270,4 +270,10 @@ class EngineClient(ABC):
     @abstractmethod
     async def stop_profile(self) -> None:
         """Start profiling the engine"""
+        ...
+
+    async def get_iteration_data(self) -> IterDataResponse:
+        ...
+
+    async def clear_iteration_data(self) -> None:
         ...
