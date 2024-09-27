@@ -519,3 +519,123 @@ class ScoringRequestOutput(PoolingRequestOutput[ScoringOutput]):
             prompt_token_ids=request_output.prompt_token_ids,
             finished=request_output.finished,
         )
+
+
+@dataclass
+class EmbeddingOutput:
+    """The output data of one embedding output of a request.
+
+    Args:
+        embedding: The embedding vector, which is a list of floats.
+        Its length depends on the hidden dimension of the model.
+    """
+    embedding: list[float]
+
+    @staticmethod
+    def from_base(pooling_output: PoolingOutput):
+        pooled_data = pooling_output.data
+        if pooled_data.ndim != 1:
+            raise ValueError("pooled_data should be a 1-D embedding vector")
+
+        return EmbeddingOutput(pooled_data.tolist())
+
+    @property
+    def hidden_size(self) -> int:
+        return len(self.embedding)
+
+    def __repr__(self) -> str:
+        return f"EmbeddingOutput(hidden_size={self.hidden_size})"
+
+
+class EmbeddingRequestOutput(PoolingRequestOutput[EmbeddingOutput]):
+
+    @staticmethod
+    def from_base(request_output: PoolingRequestOutput):
+        return EmbeddingRequestOutput(
+            request_id=request_output.request_id,
+            outputs=EmbeddingOutput.from_base(request_output.outputs),
+            prompt_token_ids=request_output.prompt_token_ids,
+            finished=request_output.finished,
+        )
+
+
+@dataclass
+class ClassificationOutput:
+    """The output data of one classification output of a request.
+
+    Args:
+        probs: The probability vector, which is a list of floats.
+        Its length depends on the number of classes.
+    """
+    probs: list[float]
+
+    @staticmethod
+    def from_base(pooling_output: PoolingOutput):
+        pooled_data = pooling_output.data
+        if pooled_data.ndim != 1:
+            raise ValueError("pooled_data should be a 1-D probability vector")
+
+        return ClassificationOutput(pooled_data.tolist())
+
+    @property
+    def num_classes(self) -> int:
+        return len(self.probs)
+
+    def __repr__(self) -> str:
+        return f"ClassificationOutput(num_classes={self.num_classes})"
+
+
+class ClassificationRequestOutput(PoolingRequestOutput[ClassificationOutput]):
+
+    @staticmethod
+    def from_base(request_output: PoolingRequestOutput):
+        return ClassificationRequestOutput(
+            request_id=request_output.request_id,
+            outputs=ClassificationOutput.from_base(request_output.outputs),
+            prompt_token_ids=request_output.prompt_token_ids,
+            finished=request_output.finished,
+        )
+
+
+@dataclass
+class ScoringOutput:
+    """The output data of one scoring output of a request.
+
+    Args:
+        score: The similarity score, which is a scalar value.
+    """
+    score: float
+
+    @staticmethod
+    def from_base(pooling_output: PoolingOutput):
+        pooled_data = pooling_output.data
+        if pooled_data.ndim != 0:
+            raise ValueError("pooled_data should be a scalar score")
+
+        return ScoringOutput(pooled_data.item())
+
+    def __repr__(self) -> str:
+        return f"ScoringOutput(score={self.score})"
+
+    @property
+    @deprecated("`LLM.score()` now returns scalar scores. "
+                "Please access it via the `score` attribute. ")
+    def embedding(self) -> list[float]:
+        return [self.score]
+
+
+class ScoringRequestOutput(PoolingRequestOutput[ScoringOutput]):
+
+    @staticmethod
+    def from_base(request_output: PoolingRequestOutput):
+        return ScoringRequestOutput(
+            request_id=request_output.request_id,
+            outputs=ScoringOutput.from_base(request_output.outputs),
+            prompt_token_ids=request_output.prompt_token_ids,
+            finished=request_output.finished,
+        )
+
+@dataclass
+class IterDataResponse:
+    num_iteration: int
+    batch_sizes: list[tuple[str, int]]

@@ -13,7 +13,7 @@ from vllm.inputs.preprocess import InputPreprocessor
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor.layers.sampler import SamplerOutput
-from vllm.outputs import CompletionOutput, PoolingRequestOutput, RequestOutput
+from vllm.outputs import CompletionOutput, PoolingRequestOutput, RequestOutput, IterDataResponse
 from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sampling_params import BeamSearchParams, SamplingParams
@@ -302,4 +302,36 @@ class EngineClient(ABC):
     @abstractmethod
     async def add_lora(self, lora_request: LoRARequest) -> None:
         """Load a new LoRA adapter into the engine for future requests."""
+        ...
+
+    @abstractmethod
+    async def reset_prefix_cache(self,
+                                 device: Optional[Device] = None) -> None:
+        """Reset the prefix cache"""
+        ...
+
+    @abstractmethod
+    async def sleep(self, level: int = 1) -> None:
+        """Sleep the engine"""
+        ...
+
+    @abstractmethod
+    async def wake_up(self, tags: Optional[list[str]] = None) -> None:
+        """Wake up the engine"""
+        ...
+
+    @abstractmethod
+    async def is_sleeping(self) -> bool:
+        """Check whether the engine is sleeping"""
+        ...
+
+    @abstractmethod
+    async def add_lora(self, lora_request: LoRARequest) -> None:
+        """Load a new LoRA adapter into the engine for future requests."""
+        ...
+
+    async def get_iteration_data(self) -> IterDataResponse:
+        ...
+
+    async def clear_iteration_data(self) -> None:
         ...

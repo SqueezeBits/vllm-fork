@@ -10,7 +10,7 @@ from typing_extensions import deprecated
 from vllm import PoolingParams
 from vllm.inputs import PromptType
 from vllm.lora.request import LoRARequest
-from vllm.outputs import RequestOutput
+from vllm.outputs import RequestOutput, IterDataResponse
 from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sampling_params import SamplingParams
 from vllm.utils import Device, deprecate_kwargs
@@ -161,14 +161,17 @@ class RPCLoadAdapterRequest:
 class RPCAdapterLoadedResponse:
     request_id: str
 
+class RPCIterDataRequest(Enum):
+    GET = 1
+    CLEAR = 2
 
 RPC_REQUEST_T = Union[RPCProcessRequest, RPCAbortRequest, RPCStartupRequest,
-                      RPCUProfileRequest, RPCLoadAdapterRequest,
+                      RPCUProfileRequest, RPCIterDataRequest, RPCLoadAdapterRequest,
                       RPCResetPrefixCacheRequest, RPCSleepRequest,
                       RPCWakeUpRequest, RPCIsSleepingRequest]
 
 REQUEST_OUTPUTS_T = Union[List[RequestOutput], RPCAdapterLoadedResponse,
-                          RPCIsSleepingResponse, RPCError]
+                          RPCIsSleepingResponse, RPCError, IterDataResponse]
 
 
 def ENGINE_DEAD_ERROR(

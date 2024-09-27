@@ -760,6 +760,229 @@ async def invocations(raw_request: Request):
     return await handler(request, raw_request)
 
 
+@router.post("/pooling", dependencies=[Depends(validate_json_request)])
+@with_cancellation
+@load_aware_call
+async def create_pooling(request: PoolingRequest, raw_request: Request):
+    handler = pooling(raw_request)
+    if handler is None:
+        return base(raw_request).create_error_response(
+            message="The model does not support Pooling API")
+
+    generator = await handler.create_pooling(request, raw_request)
+    if isinstance(generator, ErrorResponse):
+        return JSONResponse(content=generator.model_dump(),
+                            status_code=generator.code)
+    elif isinstance(generator, PoolingResponse):
+        return JSONResponse(content=generator.model_dump())
+
+    assert_never(generator)
+
+
+@router.post("/score", dependencies=[Depends(validate_json_request)])
+@with_cancellation
+@load_aware_call
+async def create_score(request: ScoreRequest, raw_request: Request):
+    handler = score(raw_request)
+    if handler is None:
+        return base(raw_request).create_error_response(
+            message="The model does not support Score API")
+
+    generator = await handler.create_score(request, raw_request)
+    if isinstance(generator, ErrorResponse):
+        return JSONResponse(content=generator.model_dump(),
+                            status_code=generator.code)
+    elif isinstance(generator, ScoreResponse):
+        return JSONResponse(content=generator.model_dump())
+
+    assert_never(generator)
+
+
+@router.post("/v1/score", dependencies=[Depends(validate_json_request)])
+@with_cancellation
+@load_aware_call
+async def create_score_v1(request: ScoreRequest, raw_request: Request):
+    logger.warning(
+        "To indicate that Score API is not part of standard OpenAI API, we "
+        "have moved it to `/score`. Please update your client accordingly.")
+
+    return await create_score(request, raw_request)
+
+
+@router.post("/v1/audio/transcriptions")
+@with_cancellation
+@load_aware_call
+async def create_transcriptions(request: Annotated[TranscriptionRequest,
+                                                   Form()],
+                                raw_request: Request):
+    handler = transcription(raw_request)
+    if handler is None:
+        return base(raw_request).create_error_response(
+            message="The model does not support Transcriptions API")
+
+    audio_data = await request.file.read()
+    generator = await handler.create_transcription(audio_data, request,
+                                                   raw_request)
+
+    if isinstance(generator, ErrorResponse):
+        return JSONResponse(content=generator.model_dump(),
+                            status_code=generator.code)
+
+    elif isinstance(generator, TranscriptionResponse):
+        return JSONResponse(content=generator.model_dump())
+
+    return StreamingResponse(content=generator, media_type="text/event-stream")
+
+
+@router.post("/rerank", dependencies=[Depends(validate_json_request)])
+@with_cancellation
+@load_aware_call
+async def do_rerank(request: RerankRequest, raw_request: Request):
+    handler = rerank(raw_request)
+    if handler is None:
+        return base(raw_request).create_error_response(
+            message="The model does not support Rerank (Score) API")
+    generator = await handler.do_rerank(request, raw_request)
+    if isinstance(generator, ErrorResponse):
+        return JSONResponse(content=generator.model_dump(),
+                            status_code=generator.code)
+    elif isinstance(generator, RerankResponse):
+        return JSONResponse(content=generator.model_dump())
+
+    assert_never(generator)
+
+
+@router.post("/v1/rerank", dependencies=[Depends(validate_json_request)])
+@with_cancellation
+async def do_rerank_v1(request: RerankRequest, raw_request: Request):
+    logger.warning_once(
+        "To indicate that the rerank API is not part of the standard OpenAI"
+        " API, we have located it at `/rerank`. Please update your client "
+        "accordingly. (Note: Conforms to JinaAI rerank API)")
+
+    return await do_rerank(request, raw_request)
+
+
+@router.post("/v2/rerank", dependencies=[Depends(validate_json_request)])
+@with_cancellation
+async def do_rerank_v2(request: RerankRequest, raw_request: Request):
+    return await do_rerank(request, raw_request)
+
+
+TASK_HANDLERS: dict[str, dict[str, tuple]] = {
+    "generate": {
+        "messages": (ChatCompletionRequest, create_chat_completion),
+        "default": (CompletionRequest, create_completion),
+    },
+    "embed": {
+        "messages": (EmbeddingChatRequest, create_embedding),
+        "default": (EmbeddingCompletionRequest, create_embedding),
+    },
+    "score": {
+        "default": (RerankRequest, do_rerank)
+    },
+    "rerank": {
+        "default": (RerankRequest, do_rerank)
+    },
+    "reward": {
+        "messages": (PoolingChatRequest, create_pooling),
+        "default": (PoolingCompletionRequest, create_pooling),
+    },
+    "classify": {
+        "messages": (PoolingChatRequest, create_pooling),
+        "default": (PoolingCompletionRequest, create_pooling),
+    },
+}
+
+if envs.VLLM_SERVER_DEV_MODE:
+
+    @router.get("/server_info")
+    async def show_server_info(raw_request: Request):
+        server_info = {"vllm_config": str(raw_request.app.state.vllm_config)}
+        return JSONResponse(content=server_info)
+
+    @router.post("/reset_prefix_cache")
+    async def reset_prefix_cache(raw_request: Request):
+        """
+        Reset the prefix cache. Note that we currently do not check if the
+        prefix cache is successfully reset in the API server.
+        """
+        device = None
+        device_str = raw_request.query_params.get("device")
+        if device_str is not None:
+            device = Device[device_str.upper()]
+        logger.info("Resetting prefix cache with specific %s...", str(device))
+        await engine_client(raw_request).reset_prefix_cache(device)
+        return Response(status_code=200)
+
+    @router.post("/sleep")
+    async def sleep(raw_request: Request):
+        # get POST params
+        level = raw_request.query_params.get("level", "1")
+        await engine_client(raw_request).sleep(int(level))
+        # FIXME: in v0 with frontend multiprocessing, the sleep command
+        # is sent but does not finish yet when we return a response.
+        return Response(status_code=200)
+
+    @router.post("/wake_up")
+    async def wake_up(raw_request: Request):
+        tags = raw_request.query_params.getlist("tags")
+        if tags == []:
+            # set to None to wake up all tags if no tags are provided
+            tags = None
+        logger.info("wake up the engine with tags: %s", tags)
+        await engine_client(raw_request).wake_up(tags)
+        # FIXME: in v0 with frontend multiprocessing, the wake-up command
+        # is sent but does not finish yet when we return a response.
+        return Response(status_code=200)
+
+    @router.get("/is_sleeping")
+    async def is_sleeping(raw_request: Request):
+        logger.info("check whether the engine is sleeping")
+        is_sleeping = await engine_client(raw_request).is_sleeping()
+        return JSONResponse(content={"is_sleeping": is_sleeping})
+
+
+@router.post("/invocations", dependencies=[Depends(validate_json_request)])
+async def invocations(raw_request: Request):
+    """
+    For SageMaker, routes requests to other handlers based on model `task`.
+    """
+    body = await raw_request.json()
+    task = raw_request.app.state.task
+
+    if task not in TASK_HANDLERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported task: '{task}' for '/invocations'. "
+            f"Expected one of {set(TASK_HANDLERS.keys())}")
+
+    handler_config = TASK_HANDLERS[task]
+    if "messages" in body:
+        request_model, handler = handler_config["messages"]
+    else:
+        request_model, handler = handler_config["default"]
+
+    # this is required since we lose the FastAPI automatic casting
+    request = request_model.model_validate(body)
+    return await handler(request, raw_request)
+
+
+@router.get("/iteration_data")
+async def get_iteration_data(raw_request: Request) -> Response:
+    """Get the iteration data accumulated in the engine"""
+    iteration_data = await engine_client(raw_request).get_iteration_data()
+    ret = {
+        "num_iteration": iteration_data.num_iteration,
+        "batch_sizes": iteration_data.batch_sizes,
+    }
+    return JSONResponse(content=ret)
+
+@router.get("/clear_iteration_data")
+async def clear_iteration_data(raw_request: Request) -> None:
+    """Get the iteration data accumulated in the engine"""
+    await engine_client(raw_request).clear_iteration_data()
+
 if envs.VLLM_TORCH_PROFILER_DIR:
     logger.warning(
         "Torch Profiler is enabled in the API server. This should ONLY be "

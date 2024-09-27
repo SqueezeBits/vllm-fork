@@ -34,7 +34,7 @@ from vllm.engine.multiprocessing import (ENGINE_DEAD_ERROR, IPC_DATA_EXT,
                                          RPCResetPrefixCacheRequest,
                                          RPCSleepRequest, RPCStartupRequest,
                                          RPCStartupResponse,
-                                         RPCUProfileRequest, RPCWakeUpRequest)
+                                         RPCUProfileRequest, RPCWakeUpRequest, RPCIterDataRequest)
 from vllm.engine.protocol import EngineClient
 # yapf: enable
 from vllm.envs import VLLM_RPC_TIMEOUT
@@ -43,7 +43,7 @@ from vllm.inputs.preprocess import InputPreprocessor
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor.layers.sampler import SamplerOutput
-from vllm.outputs import PoolingRequestOutput, RequestOutput
+from vllm.outputs import PoolingRequestOutput, RequestOutput, IterDataResponse
 from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sampling_params import SamplingParams
 from vllm.transformers_utils.tokenizer_group import init_tokenizer_from_configs
@@ -112,6 +112,10 @@ class MQLLMEngineClient(EngineClient):
         # Receive streams of RequestOutput from the MQLLMEngine.
         self.output_socket: Socket = self.context.socket(zmq.constants.PULL)
         self.output_socket.connect(f"{ipc_path}{IPC_OUTPUT_EXT}")
+
+        # Receive streams of IterDataResponse from the MQLLMEngine.
+        self.iter_output_socket: Socket = self.context.socket(zmq.constants.PULL)
+        self.iter_output_socket.connect(f"{ipc_path}_iter_socket")
 
         # IPC path for acking heartbeats.
         self.heartbeat_socket: Socket = self.context.socket(zmq.constants.PULL)
@@ -743,3 +747,77 @@ class MQLLMEngineClient(EngineClient):
         # Raise on error, otherwise happily return None
         if isinstance(request_output, BaseException):
             raise request_output
+
+    async def reset_prefix_cache(self,
+                                 device: Optional[Device] = None) -> None:
+        """Reset the prefix cache"""
+
+        await self._send_one_way_rpc_request(
+            request=RPCResetPrefixCacheRequest(device),
+            socket=self.input_socket)
+
+    async def sleep(self, level: int = 1) -> None:
+        """Sleep the engine for a given level"""
+        return await self._send_one_way_rpc_request(
+            request=RPCSleepRequest(level), socket=self.input_socket)
+
+    async def wake_up(self, tags: Optional[list[str]] = None) -> None:
+        """Wake up the engine"""
+        return await self._send_one_way_rpc_request(
+            request=RPCWakeUpRequest(tags), socket=self.input_socket)
+
+    async def is_sleeping(self) -> bool:
+        """Check whether the engine is sleeping"""
+        request = RPCIsSleepingRequest()
+
+        queue: asyncio.Queue[Union[BaseException,
+                                   RPCIsSleepingResponse]] = asyncio.Queue()
+        self.output_queues[request.request_id] = queue
+
+        request_bytes = pickle.dumps(request)
+        await self.input_socket.send_multipart((request_bytes, ), copy=False)
+
+        request_output = await queue.get()
+        self.output_queues.pop(request.request_id)
+
+        if isinstance(request_output, BaseException):
+            raise request_output
+        return request_output.is_sleeping
+
+    async def add_lora(self, lora_request: LoRARequest) -> None:
+        """Load a new LoRA adapter into the engine for future requests."""
+        # Uses the same I/O as generate requests
+        request = RPCLoadAdapterRequest(lora_request)
+
+        # Create output queue for this requests.
+        queue: asyncio.Queue[Union[None, BaseException]] = asyncio.Queue()
+        self.output_queues[request.request_id] = queue
+
+        # Send the request
+        request_bytes = pickle.dumps(request)
+        await self.input_socket.send_multipart((request_bytes, ), copy=False)
+
+        # Wait for the response
+        request_output = await queue.get()
+        self.output_queues.pop(request.request_id)
+
+        # Raise on error, otherwise happily return None
+        if isinstance(request_output, BaseException):
+            raise request_output
+
+    async def get_iteration_data(self) -> IterDataResponse:
+        await self._send_one_way_rpc_request(request=RPCIterDataRequest.GET, socket=self.input_socket)
+
+        if await self.iter_output_socket.poll(timeout=VLLM_RPC_TIMEOUT) == 0:
+            raise TimeoutError()
+        
+        frame = await self.iter_output_socket.recv(copy=False)
+        data = pickle.loads(frame.buffer)
+
+        if isinstance(data, IterDataResponse):
+            return data
+        
+        raise data
+
+    async def clear_iteration_data(self) -> None:
+        await self._send_one_way_rpc_request(request=RPCIterDataRequest.CLEAR, socket=self.input_socket)

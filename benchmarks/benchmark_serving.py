@@ -59,6 +59,7 @@ from benchmark_utils import convert_to_pytorch_benchmark_format, write_to_json
 
 MILLISECONDS_TO_SECONDS_CONVERSION = 1000
 
+import requests
 
 @dataclass
 class BenchmarkMetrics:
@@ -241,7 +242,6 @@ def calculate_metrics(
 
     return metrics, actual_output_lens
 
-
 async def benchmark(
     backend: str,
     api_url: str,
@@ -301,6 +301,8 @@ async def benchmark(
         lora_modules = iter(
             [random.choice(lora_modules) \
                 for _ in range(len(input_requests))])
+
+    requests.get(base_url + "/clear_iteration_data")
 
     if profile:
         print("Starting profiler...")
@@ -381,7 +383,7 @@ async def benchmark(
             output_len=test_output_len,
             logprobs=logprobs,
         )
-        profile_output = await request_func(request_func_input=profile_input)
+        profile_output = await request_func(request_func_input=profile_input, ignore_eos=True)
         if profile_output.success:
             print("Profiler stopped")
 
@@ -416,6 +418,9 @@ async def benchmark(
                                     metrics.output_throughput))
     print("{:<40} {:<10.2f}".format("Total Token throughput (tok/s):",
                                     metrics.total_token_throughput))
+    
+    iteration_data = requests.get(base_url + "/iteration_data").json()
+    print(type(iteration_data))
 
     result = {
         "duration": benchmark_duration,
@@ -433,6 +438,7 @@ async def benchmark(
         "itls": [output.itl for output in outputs],
         "generated_texts": [output.generated_text for output in outputs],
         "errors": [output.error for output in outputs],
+        "log_iterations": iteration_data,
     }
 
     def process_one_metric(

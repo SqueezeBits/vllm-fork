@@ -25,10 +25,10 @@ from vllm.engine.multiprocessing import (ENGINE_DEAD_ERROR, IPC_DATA_EXT,
                                          RPCResetPrefixCacheRequest,
                                          RPCSleepRequest, RPCStartupRequest,
                                          RPCStartupResponse,
-                                         RPCUProfileRequest, RPCWakeUpRequest)
+                                         RPCUProfileRequest, RPCWakeUpRequest, RPCIterDataRequest)
 # yapf: enable
 from vllm.logger import init_logger
-from vllm.outputs import RequestOutput
+from vllm.outputs import RequestOutput, IterDataResponse
 from vllm.transformers_utils.config import (
     maybe_register_config_serialize_by_value)
 from vllm.usage.usage_lib import UsageContext
@@ -96,6 +96,10 @@ class MQLLMEngine:
         # Send output stream back to client.
         self.output_socket = self.ctx.socket(zmq.constants.PUSH)
         self.output_socket.bind(f"{ipc_path}{IPC_OUTPUT_EXT}")
+    
+        # Receive streams of IterDataResponse from the MQLLMEngine.
+        self.iter_output_socket = self.ctx.socket(zmq.constants.PUSH)
+        self.iter_output_socket.bind(f"{ipc_path}_iter_socket")
 
         # Send heartbeats back to client.
         self.heartbeat_socket = self.ctx.socket(zmq.constants.PUSH)
@@ -277,6 +281,11 @@ class MQLLMEngine:
                     self.wake_up(request.tags)
                 elif isinstance(request, RPCIsSleepingRequest):
                     self._handle_is_sleeping_request(request)
+                elif isinstance(request, RPCIterDataRequest):
+                    if request == RPCIterDataRequest.GET:
+                        self._handle_iteration_data_request(request)
+                    else:
+                        self.engine.clear_iteration_data()
                 else:
                     raise ValueError("Unknown RPCRequest Type: "
                                      f"{type(request)}")
@@ -328,6 +337,36 @@ class MQLLMEngine:
         self.engine.abort_request(request.request_id)
         if self.log_requests:
             logger.info("Aborted request %s.", request.request_id)
+    
+    def _handle_iteration_data_request(self, request: RPCIterDataRequest.GET):
+        num_iteration, batch_sizes = self.engine.get_iteration_data()
+
+        outputs = IterDataResponse(
+            num_iteration,
+            batch_sizes
+        )
+        output_bytes = pickle.dumps(outputs)
+        self.iter_output_socket.send_multipart((output_bytes, ), copy=False)
+
+    def _handle_load_adapter_request(self, request: RPCLoadAdapterRequest):
+        try:
+            self.engine.add_lora(request.lora_request)
+        except BaseException as e:
+            # Send back an error if the adater fails to load
+            rpc_err = RPCError(request_id=request.request_id,
+                               is_engine_errored=False,
+                               exception=e)
+            self._send_outputs(rpc_err)
+            return
+        # Otherwise, send back the successful load message
+        self._send_outputs(
+            RPCAdapterLoadedResponse(request_id=request.request_id))
+
+    def _handle_is_sleeping_request(self, request: RPCIsSleepingRequest):
+        is_sleeping = self.is_sleeping()
+        self._send_outputs(
+            RPCIsSleepingResponse(request_id=request.request_id,
+                                  is_sleeping=is_sleeping))
 
     def _handle_load_adapter_request(self, request: RPCLoadAdapterRequest):
         try:
