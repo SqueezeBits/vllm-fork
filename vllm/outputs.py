@@ -525,3 +525,9 @@ class ScoringRequestOutput(PoolingRequestOutput[ScoringOutput]):
             prompt_token_ids=request_output.prompt_token_ids,
             finished=request_output.finished,
         )
+
+
+@dataclass
+class IterDataResponse:
+    num_iteration: int
+    batch_sizes: list[tuple[str, int]]
