@@ -311,7 +311,6 @@ async def show_version():
 @router.post("/v1/chat/completions")
 async def create_chat_completion(request: ChatCompletionRequest,
                                  raw_request: Request):
-
     generator = await chat(raw_request).create_chat_completion(
         request, raw_request)
 
@@ -350,6 +349,21 @@ async def create_embedding(request: EmbeddingRequest, raw_request: Request):
 
     assert_never(generator)
 
+
+@router.get("/iteration_data")
+async def get_iteration_data(raw_request: Request) -> Response:
+    """Get the iteration data accumulated in the engine"""
+    iteration_data = await engine_client(raw_request).get_iteration_data()
+    ret = {
+        "num_iteration": iteration_data.num_iteration,
+        "batch_sizes": iteration_data.batch_sizes,
+    }
+    return JSONResponse(content=ret)
+
+@router.get("/clear_iteration_data")
+async def clear_iteration_data(raw_request: Request) -> None:
+    """Get the iteration data accumulated in the engine"""
+    await engine_client(raw_request).clear_iteration_data()
 
 if envs.VLLM_TORCH_PROFILER_DIR:
     logger.warning(

@@ -316,3 +316,8 @@ class RequestOutputFactory:
             return EmbeddingRequestOutput.from_seq_group(seq_group)
         else:
             return RequestOutput.from_seq_group(seq_group, use_cache)
+
+@dataclass
+class IterDataResponse:
+    num_iteration: int
+    batch_sizes: list[tuple[str, int]]
