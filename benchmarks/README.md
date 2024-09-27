@@ -59,7 +59,7 @@ Total input tokens, total generated tokens, end-to-end latency, TTFT, TPOT, mean
 * generation latency = end-to-end latency - prefill latency
 * prefill throughput = total input tokens / prefill latency
 * end-to-end throughput = total generated tokens / end-to-end latency
-* generation throughput = (total generated tokens - num-requests) / generation latency
+* generation throughput = total generated tokens / generation latency
 
 ### Benchmarking with fixed-length random data
 
