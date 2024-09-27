@@ -6,7 +6,7 @@ from vllm.core.scheduler import SchedulerOutputs
 from vllm.inputs.data import PromptType
 from vllm.lora.request import LoRARequest
 from vllm.model_executor.layers.sampler import SamplerOutput
-from vllm.outputs import EmbeddingRequestOutput, RequestOutput
+from vllm.outputs import EmbeddingRequestOutput, RequestOutput, IterDataResponse
 from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sampling_params import SamplingParams
@@ -100,4 +100,10 @@ class EngineClient(Protocol):
 
     async def stop_profile(self) -> None:
         """Start profiling the engine"""
+        ...
+
+    async def get_iteration_data(self) -> IterDataResponse:
+        ...
+
+    async def clear_iteration_data(self) -> None:
         ...

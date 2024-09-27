@@ -5,7 +5,7 @@ from typing import List, Mapping, Optional, Union, overload
 from vllm import PoolingParams
 from vllm.inputs import PromptType
 from vllm.lora.request import LoRARequest
-from vllm.outputs import RequestOutput
+from vllm.outputs import RequestOutput, IterDataResponse
 from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sampling_params import SamplingParams
 from vllm.utils import deprecate_kwargs
@@ -116,11 +116,14 @@ class RPCUProfileRequest(Enum):
     START_PROFILE = 1
     STOP_PROFILE = 2
 
+class RPCIterDataRequest(Enum):
+    GET = 1
+    CLEAR = 2
 
 RPC_REQUEST_T = Union[RPCProcessRequest, RPCAbortRequest, RPCStartupRequest,
-                      RPCUProfileRequest]
+                      RPCUProfileRequest, RPCIterDataRequest]
 
-REQUEST_OUTPUTS_T = Union[List[RequestOutput], RPCError]
+REQUEST_OUTPUTS_T = Union[List[RequestOutput], RPCError, IterDataResponse]
 
 
 def ENGINE_DEAD_ERROR(

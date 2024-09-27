@@ -25,14 +25,13 @@ from vllm.engine.multiprocessing import (ENGINE_DEAD_ERROR, IPC_DATA_EXT,
                                          VLLM_RPC_SUCCESS_STR, RPCAbortRequest,
                                          RPCError, RPCProcessRequest,
                                          RPCStartupRequest, RPCStartupResponse,
-                                         RPCUProfileRequest)
+                                         RPCUProfileRequest, RPCIterDataRequest)
 # yapf: enable
 from vllm.envs import VLLM_RPC_TIMEOUT
 from vllm.inputs import PromptType, TokensPrompt
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
-from vllm.outputs import (CompletionOutput, EmbeddingRequestOutput,
-                          RequestOutput)
+from vllm.outputs import CompletionOutput, EmbeddingRequestOutput, RequestOutput, IterDataResponse
 from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sampling_params import BeamSearchParams, SamplingParams
 from vllm.transformers_utils.tokenizer_group import init_tokenizer_from_configs
@@ -100,6 +99,10 @@ class MQLLMEngineClient:
         # Receive streams of RequestOutput from the MQLLMEngine.
         self.output_socket: Socket = self.context.socket(zmq.constants.PULL)
         self.output_socket.connect(f"{ipc_path}{IPC_OUTPUT_EXT}")
+
+        # Receive streams of IterDataResponse from the MQLLMEngine.
+        self.iter_output_socket: Socket = self.context.socket(zmq.constants.PULL)
+        self.iter_output_socket.connect(f"{ipc_path}_iter_socket")
 
         # IPC path for acking heartbeats.
         self.heartbeat_socket: Socket = self.context.socket(zmq.constants.PULL)
@@ -702,3 +705,20 @@ class MQLLMEngineClient:
 
         await self._send_one_way_rpc_request(
             request=RPCUProfileRequest.STOP_PROFILE, socket=self.input_socket)
+
+    async def get_iteration_data(self) -> IterDataResponse:
+        await self._send_one_way_rpc_request(request=RPCIterDataRequest.GET, socket=self.input_socket)
+
+        if await self.iter_output_socket.poll(timeout=VLLM_RPC_TIMEOUT) == 0:
+            raise TimeoutError()
+        
+        frame = await self.iter_output_socket.recv(copy=False)
+        data = pickle.loads(frame.buffer)
+
+        if isinstance(data, IterDataResponse):
+            return data
+        
+        raise data
+
+    async def clear_iteration_data(self) -> None:
+        await self._send_one_way_rpc_request(request=RPCIterDataRequest.CLEAR, socket=self.input_socket)
