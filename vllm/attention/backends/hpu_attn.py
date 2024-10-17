@@ -191,14 +191,14 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
                 if not self.prefill_usefusedsdpa:
                     # TODO: move this outside of model
                     assert attn_metadata.attn_bias is not None, \
-                            'attn_bias must be set before calling model.forward!'
+                            'attn_bias must be set before calling model.forward'
                     attn_bias = attn_metadata.attn_bias
                     if self.alibi_slopes is not None:
-                        position_bias = _make_alibi_bias(self.alibi_slopes,
-                                                        self.num_kv_heads,
-                                                        attn_bias.dtype,
-                                                        attn_bias.shape[-1])
-                        attn_bias = attn_bias.tile((1, self.num_kv_heads, 1, 1))
+                        position_bias = _make_alibi_bias(
+                            self.alibi_slopes, self.num_kv_heads,
+                            attn_bias.dtype, attn_bias.shape[-1])
+                        attn_bias = attn_bias.tile(
+                            (1, self.num_kv_heads, 1, 1))
                         attn_bias.add_(position_bias)
                 else:
                     attn_bias = None
@@ -215,7 +215,7 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
                     matmul_av_op=self.matmul_av,
                 )
             else:
-                # TODO: enable FusedSDPA 
+                # TODO: enable FusedSDPA
                 out = HPUPagedAttention.forward_prefix(
                     query=query.view(query_shape),
                     key=key.view(kv_shape),
@@ -229,8 +229,7 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
                     matmul_av_op=self.matmul_av,
                     softmax_op=self.softmax,
                     keys_fetch_func=self.k_cache.fetch_from_cache,
-                    values_fetch_func=self.v_cache.fetch_from_cache
-                )
+                    values_fetch_func=self.v_cache.fetch_from_cache)
             output = out.reshape(batch_size, seq_len, hidden_size)
         else:
             # Decoding run.
