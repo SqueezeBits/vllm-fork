@@ -1,34 +1,35 @@
 {
     "$defs": {
-        "SearchQuery": {
-            "description": "Search query for the retrieval task.",
+        "PickedLine": {
+            "description": "Picked line from the sonnet dataset.",
             "properties": {
-                "query_type": {
-                    "description": "The type of query most effective for handling the retrieval task.",
-                    "title": "Query Type",
+                "line_type": {
+                    "description": "Type of the poem line.",
+                    "title": "Line Type",
                     "type": "string"
                 },
-                "query": {
-                    "description": "A random user's search query.",
-                    "title": "Query",
+                "line": {
+                    "description": "A random poem line.",
+                    "title": "Line",
                     "type": "string"
                 }
             },
-            "required": ["query_type", "query"],
-            "title": "SearchQuery",
+            "required": ["line_type", "line"],
+            "title": "PickedLine",
             "type": "object"
         }
     },
-    "description": "A list of search queries anticipating a user looking for information from a given web page.",
+    "description": "A list of picked poem lines anticipating a user looking for the subset of poem lines from input data",
     "properties": {
-        "queries": {
-            "description": "Brainstormed search queries for the given web page.",
-            "items": {"$ref": "#/$defs/SearchQuery"},
-            "title": "Queries",
-            "type": "array"
+        "lines": {
+            "description": "Picked poem lines for the given input.",
+            "items": {"$ref": "#/$defs/PickedLine"},
+            "title": "Lines",
+            "type": "array",
+            "minItems": 1
         }
     },
-    "required": ["queries"],
-    "title": "Brainstorm",
+    "required": ["lines"],
+    "title": "Picks",
     "type": "object"
 }
