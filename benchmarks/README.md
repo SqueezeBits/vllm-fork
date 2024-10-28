@@ -1,343 +1,243 @@
-# Benchmarking vLLM
+# SQZB VLLM benchmarking script
 
-This README guides you through running benchmark tests with the extensive
-datasets supported on vLLM. It’s a living document, updated as new features and datasets
-become available.
+We've been conducting benchmarks via `vllm/entrypoints/openai/api_server.py` and `benchmarks/benchmark_sqzb.py`.
 
-## Dataset Overview
+## Disclaimer
+* Time spent on request queueing is not included in reported TTFT by the benchmarking script.
+* We assume prompts in the datasets are already tokenized to exclude input tokenization from the measurement. 
 
-<table style="width:100%; border-collapse: collapse;">
-  <thead>
-    <tr>
-      <th style="width:15%; text-align: left;">Dataset</th>
-      <th style="width:10%; text-align: center;">Online</th>
-      <th style="width:10%; text-align: center;">Offline</th>
-      <th style="width:65%; text-align: left;">Data Path</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>ShareGPT</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td><code>wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json</code></td>
-    </tr>
-    <tr>
-      <td><strong>BurstGPT</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td><code>wget https://github.com/HPMLL/BurstGPT/releases/download/v1.1/BurstGPT_without_fails_2.csv</code></td>
-    </tr>
-    <tr>
-      <td><strong>Sonnet</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td>Local file: <code>benchmarks/sonnet.txt</code></td>
-    </tr>
-    <tr>
-      <td><strong>Random</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td><code>synthetic</code></td>
-    </tr>
-    <tr>
-      <td><strong>HuggingFace-VisionArena</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td><code>lmarena-ai/VisionArena-Chat</code></td>
-    </tr>
-    <tr>
-      <td><strong>HuggingFace-InstructCoder</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td><code>likaixin/InstructCoder</code></td>
-    </tr>
-      <tr>
-      <td><strong>HuggingFace-AIMO</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td><code>AI-MO/aimo-validation-aime</code> , <code>AI-MO/NuminaMath-1.5</code>, <code>AI-MO/NuminaMath-CoT</code></td>
-    </tr>
-    <tr>
-      <td><strong>HuggingFace-Other</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td><code>lmms-lab/LLaVA-OneVision-Data</code>, <code>Aeala/ShareGPT_Vicuna_unfiltered</code></td>
-    </tr>
-  </tbody>
-</table>
+## Benchmarking process
 
-✅: supported
+### Benchmarking with dataset
+Benchmarking is done in the following 3 steps. Command line examples are for benchmarking a llama3 8B model with a dynamic dataset with 1k input and 1k output.
 
-🟡: Partial support
+1. Run end-to-end benchmark
 
-🚧: to be supported
+    - Run api server
+        ```bash
+        python -m vllm.entrypoints.openai.api_server \
+            --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
+            --block-size 128 \
+            --max-model-len 2048 \
+            --enforce-eager \
+            --disable-log-requests
+        ```
 
-**Note**: HuggingFace dataset's `dataset-name` should be set to `hf`
+    - Send requests
+        ```bash
+        python benchmarks/benchmark_sqzb.py \
+            --tokenizer /scratch-1/models/Meta-Llama-3-8B-Instruct \
+            --dataset /scratch-1/datasets/dynamic_sonnet_llama3/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet \
+            --max-input-len 1024 \
+            --max-output-len 1024
+        ```
 
----
-## Example - Online Benchmark
+2. Run prefill benchmark
 
-First start serving your model
+    - Run api server again with the same configuration as step 1
+        ```bash
+        python -m vllm.entrypoints.openai.api_server \
+            --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
+            --block-size 128 \
+            --max-model-len 2048 \
+            --enforce-eager \
+            --disable-log-requests
+        ```
 
-```bash
-vllm serve NousResearch/Hermes-3-Llama-3.1-8B --disable-log-requests
-```
+    - Send requests with max output len set to 1
+        ```bash
+        python benchmarks/benchmark_sqzb.py \
+            --tokenizer /scratch-1/models/Meta-Llama-3-8B-Instruct \
+            --dataset /scratch-1/datasets/dynamic_sonnet_llama3/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet \
+            --max-input-len 1024 \
+            --max-output-len 1
+        ```
 
-Then run the benchmarking script
+3. Summarize results
 
-```bash
-# download dataset
-# wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json
-python3 vllm/benchmarks/benchmark_serving.py \
-  --backend vllm \
-  --model NousResearch/Hermes-3-Llama-3.1-8B \
-  --endpoint /v1/completions \
-  --dataset-name sharegpt \
-  --dataset-path <your data path>/ShareGPT_V3_unfiltered_cleaned_split.json \
-  --num-prompts 10
-```
+Total input tokens, total generated tokens, end-to-end latency, TTFT, TPOT, mean running batch size(average scheduled batch size in decode steps) are obtained via step 1. Prefill latency is obtained in step2. Other metrics are calculated as the following:
+* generation latency = end-to-end latency - prefill latency
+* prefill throughput = total input tokens / prefill latency
+* end-to-end throughput = total generated tokens / end-to-end latency
+* generation throughput = total generated tokens / generation latency
 
-If successful, you will see the following output
+### Benchmarking with fixed-length random data
 
-```
-============ Serving Benchmark Result ============
-Successful requests:                     10        
-Benchmark duration (s):                  5.78      
-Total input tokens:                      1369      
-Total generated tokens:                  2212      
-Request throughput (req/s):              1.73      
-Output token throughput (tok/s):         382.89    
-Total Token throughput (tok/s):          619.85    
----------------Time to First Token----------------
-Mean TTFT (ms):                          71.54     
-Median TTFT (ms):                        73.88     
-P99 TTFT (ms):                           79.49     
------Time per Output Token (excl. 1st token)------
-Mean TPOT (ms):                          7.91      
-Median TPOT (ms):                        7.96      
-P99 TPOT (ms):                           8.03      
----------------Inter-token Latency----------------
-Mean ITL (ms):                           7.74      
-Median ITL (ms):                         7.70      
-P99 ITL (ms):                            8.39      
-==================================================
-```
+Repeat the steps above from 1 to 3 but with `--dataset` argument omitted in request sending script call. For example:
+    ```bash
+    python benchmarks/benchmark_sqzb.py \
+        --tokenizer /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --max-input-len 1024 \
+        --max-output-len 1024
+    ```
 
-### VisionArena Benchmark for Vision Language Models
 
-```bash
-# need a model with vision capability here
-vllm serve Qwen/Qwen2-VL-7B-Instruct --disable-log-requests
-```
+## Additional Features
+Benchmark script now supports additional features including batched multi-LoRA, guided json, automatic prefix caching and FP8 KV cache. Command line examples are as follows:
 
-```bash
-python3 vllm/benchmarks/benchmark_serving.py \
-  --backend openai-chat \
-  --model Qwen/Qwen2-VL-7B-Instruct \
-  --endpoint /v1/chat/completions \
-  --dataset-name hf \
-  --dataset-path lmarena-ai/VisionArena-Chat \
-  --hf-split train \
-  --num-prompts 1000
-```
+### A. Batched Multi-LoRA
+Currently, Multi-LoRA can be tested under limited configuration(`max_num_seqs` <= 128, `max_num_batched_tokens` == `max_num_seqs` * `max_model_len`) due to [vllm-fork internal bug](https://github.com/HabanaAI/vllm-fork/issues/237).
+1. Run api server with LoRA support
+    ```bash
+    VLLM_PROMPT_BS_BUCKET_MAX=128 \
+    python -m vllm.entrypoints.openai.api_server \
+        --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --block-size 128 \
+        --max-model-len 2048 \
+        --max-num-seqs 128 \
+        --max-num-batched-tokens 262144 \
+        --enable-lora \
+        --lora-modules lora-1=/scratch-1/models/Gaudi_LoRA_Llama-3-8B-Instruct lora-2=/scratch-1/models/Gaudi_LoRA_Llama-3-8B-Instruct \
+        --max-loras 2 \
+        --max-lora-rank 8 \
+        --enforce-eager \
+        --disable-log-requests
+    ```
 
-### InstructCoder Benchmark with Speculative Decoding
+2. Send requests with LoRA support
+    ```bash
+    python benchmarks/benchmark_sqzb.py \
+        --tokenizer /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --dataset /scratch-1/datasets/dynamic_sonnet_llama3/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet \
+        --max-input-len 1024 \
+        --max-output-len 1024 \
+        --lora-pattern ,lora-1,lora-2
+    ```
 
-``` bash
-VLLM_USE_V1=1 vllm serve meta-llama/Meta-Llama-3-8B-Instruct \
-    --speculative-model "[ngram]" \
-    --ngram_prompt_lookup_min 2 \
-    --ngram-prompt-lookup-max 5 \
-    --num_speculative_tokens 5
-```
+### B. Guided JSON
+1. Run api server
+    ```bash
+    python -m vllm.entrypoints.openai.api_server \
+        --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --block-size 128 \
+        --max-model-len 2048 \
+        --enforce-eager \
+        --disable-log-requests
+    ```
 
-``` bash
-python3 benchmarks/benchmark_serving.py \
-    --model meta-llama/Meta-Llama-3-8B-Instruct \
-    --dataset-name hf \
-    --dataset-path likaixin/InstructCoder \
-    --num-prompts 2048
-```
+2. Send requests with json template
+    ```bash
+    python benchmarks/benchmark_sqzb.py \
+        --tokenizer /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --dataset /scratch-1/datasets/dynamic_sonnet_llama3/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet \
+        --max-input-len 1024 \
+        --max-output-len 1024 \
+        --json-template benchmarks/guided_json_template.json
+    ```
 
-### Other HuggingFaceDataset Examples
+### C. Automatic Prefix Caching
+1. Run api server
+    ```bash
+    python -m vllm.entrypoints.openai.api_server \
+        --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --block-size 128 \
+        --max-model-len 2048 \
+        --enforce-eager \
+        --enable-prefix-caching \
+        --disable-log-requests
+    ```
 
-```bash
-vllm serve Qwen/Qwen2-VL-7B-Instruct --disable-log-requests
-```
+2. Send requests
+    ```bash
+    python benchmarks/benchmark_sqzb.py \
+        --tokenizer /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --dataset /scratch-1/datasets/dynamic_sonnet_llama3/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet \
+        --max-input-len 1024 \
+        --max-output-len 1024
+    ```
 
-**`lmms-lab/LLaVA-OneVision-Data`**
+### D. FP8 KV Cache
+0. Install INC from modified source.
+    ```bash
+    git submodule update --init --recursive
+    pushd neural-compressor
+    pip install -e .
+    python setup.py develop pt
+    popd
+    ```
 
-```bash
-python3 vllm/benchmarks/benchmark_serving.py \
-  --backend openai-chat \
-  --model Qwen/Qwen2-VL-7B-Instruct \
-  --endpoint /v1/chat/completions \
-  --dataset-name hf \
-  --dataset-path lmms-lab/LLaVA-OneVision-Data \
-  --hf-split train \
-  --hf-subset "chart2text(cauldron)" \
-  --num-prompts 10
-```
+1. Perform INC measurement mode with benchmark_throughput script.
+    ```bash
+    QUANT_CONFIG=configs/measure.json QUANT_VERBOSE=1 VLLM_SKIP_WARMUP=True python benchmarks/benchmark_throughput.py \
+        --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --input-len 1024 \
+        --output-len 1024 \
+        --num-prompts 128 \
+        --quantization inc
+    ```
+    Check whether the measurement results are properly generated under artifacts/ directory.
 
-**`Aeala/ShareGPT_Vicuna_unfiltered`**
+2. Perform benchmark with quantization
+    1. Run api server
+        ```bash
+        QUANT_CONFIG=configs/quantize.json QUANT_VERBOSE=1 python -m vllm.entrypoints.openai.api_server \
+            --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
+            --block-size 128 \
+            --max-model-len 2048 \
+            --enforce-eager \
+            --quantization inc \
+            --kv-cache-dtype fp8_inc \
+            --disable-log-requests
+        ```
 
-```bash
-python3 vllm/benchmarks/benchmark_serving.py \
-  --backend openai-chat \
-  --model Qwen/Qwen2-VL-7B-Instruct \
-  --endpoint /v1/chat/completions \
-  --dataset-name hf \
-  --dataset-path Aeala/ShareGPT_Vicuna_unfiltered \
-  --hf-split train \
-  --num-prompts 10
-```
+    2. Send requests
+        ```bash
+        python benchmarks/benchmark_sqzb.py \
+            --tokenizer /scratch-1/models/Meta-Llama-3-8B-Instruct \
+            --dataset /scratch-1/datasets/dynamic_sonnet_llama3/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet \
+            --max-input-len 1024 \
+            --max-output-len 1024
+        ```
 
-**`AI-MO/aimo-validation-aime`**
+### E. Benchmarking with all features in interest enabled
+0. Install INC from modified source.
+    ```bash
+    git submodule update --init --recursive
+    pushd neural-compressor
+    pip install -e .
+    python setup.py develop pt
+    popd
+    ```
 
-``` bash
-python3 vllm/benchmarks/benchmark_serving.py \
-    --model Qwen/QwQ-32B \
-    --dataset-name hf \
-    --dataset-path AI-MO/aimo-validation-aime \
-    --num-prompts 10 \
-    --seed 42
-```
+1. Perform INC measurement mode with benchmark_throughput script.
+    ```bash
+    QUANT_CONFIG=configs/measure.json QUANT_VERBOSE=1 VLLM_SKIP_WARMUP=True python benchmarks/benchmark_throughput.py \
+        --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --input-len 1024 \
+        --output-len 1024 \
+        --num-prompts 128 \
+        --quantization inc
+    ```
+    Check whether the measurement results are properly generated under artifacts/ directory.
 
-### Running With Sampling Parameters
+2. Run api server
+    ```bash
+    QUANT_CONFIG=configs/quantize.json QUANT_VERBOSE=1 \
+    VLLM_PROMPT_BS_BUCKET_MAX=128 \
+    python -m vllm.entrypoints.openai.api_server \
+        --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --block-size 128 \
+        --max-model-len 2048 \
+        --enforce-eager \
+        --max-num-seqs 128 \
+        --max-num-batched-tokens 262144 \
+        --enable-lora \
+        --lora-modules lora-1=/scratch-1/models/Gaudi_LoRA_Llama-3-8B-Instruct lora-2=/scratch-1/models/Gaudi_LoRA_Llama-3-8B-Instruct \
+        --max-loras 2 \
+        --max-lora-rank 8 \
+        --enable-prefix-caching \
+        --quantization inc \
+        --kv-cache-dtype fp8_inc \
+        --disable-log-requests
+    ```
 
-When using OpenAI-compatible backends such as `vllm`, optional sampling
-parameters can be specified. Example client command:
-
-```bash
-python3 vllm/benchmarks/benchmark_serving.py \
-  --backend vllm \
-  --model NousResearch/Hermes-3-Llama-3.1-8B \
-  --endpoint /v1/completions \
-  --dataset-name sharegpt \
-  --dataset-path <your data path>/ShareGPT_V3_unfiltered_cleaned_split.json \
-  --top-k 10 \
-  --top-p 0.9 \
-  --temperature 0.5 \
-  --num-prompts 10
-```
-
----
-## Example - Offline Throughput Benchmark
-
-```bash
-python3 vllm/benchmarks/benchmark_throughput.py \
-  --model NousResearch/Hermes-3-Llama-3.1-8B \
-  --dataset-name sonnet \
-  --dataset-path vllm/benchmarks/sonnet.txt \
-  --num-prompts 10
-```
-
-If successful, you will see the following output
-
-```
-Throughput: 7.15 requests/s, 4656.00 total tokens/s, 1072.15 output tokens/s
-Total num prompt tokens:  5014
-Total num output tokens:  1500
-```
-
-### VisionArena Benchmark for Vision Language Models
-
-``` bash
-python3 vllm/benchmarks/benchmark_throughput.py \
-  --model Qwen/Qwen2-VL-7B-Instruct \
-  --backend vllm-chat \
-  --dataset-name hf \
-  --dataset-path lmarena-ai/VisionArena-Chat \
-  --num-prompts 1000 \
-  --hf-split train
-```
-
-The `num prompt tokens` now includes image token counts
-
-```
-Throughput: 2.55 requests/s, 4036.92 total tokens/s, 326.90 output tokens/s
-Total num prompt tokens:  14527
-Total num output tokens:  1280
-```
-
-### InstructCoder Benchmark with Speculative Decoding
-
-``` bash
-VLLM_WORKER_MULTIPROC_METHOD=spawn \
-VLLM_USE_V1=1 \
-python3 vllm/benchmarks/benchmark_throughput.py \
-    --dataset-name=hf \
-    --dataset-path=likaixin/InstructCoder \
-    --model=meta-llama/Meta-Llama-3-8B-Instruct \
-    --input-len=1000 \
-    --output-len=100 \
-    --num-prompts=2048 \
-    --async-engine \
-    --speculative-model="[ngram]" \
-    --ngram_prompt_lookup_min=2 \
-    --ngram-prompt-lookup-max=5 \
-    --num_speculative_tokens=5
-```
-
-```
-Throughput: 104.77 requests/s, 23836.22 total tokens/s, 10477.10 output tokens/s
-Total num prompt tokens:  261136
-Total num output tokens:  204800
-```
-
-### Other HuggingFaceDataset Examples
-
-**`lmms-lab/LLaVA-OneVision-Data`**
-
-```bash
-python3 vllm/benchmarks/benchmark_throughput.py \
-  --model Qwen/Qwen2-VL-7B-Instruct \
-  --backend vllm-chat \
-  --dataset-name hf \
-  --dataset-path lmms-lab/LLaVA-OneVision-Data \
-  --hf-split train \
-  --hf-subset "chart2text(cauldron)" \
-  --num-prompts 10
-```
-
-**`Aeala/ShareGPT_Vicuna_unfiltered`**
-
-```bash
-python3 vllm/benchmarks/benchmark_throughput.py \
-  --model Qwen/Qwen2-VL-7B-Instruct \
-  --backend vllm-chat \
-  --dataset-name hf \
-  --dataset-path Aeala/ShareGPT_Vicuna_unfiltered \
-  --hf-split train \
-  --num-prompts 10
-```
-
-**`AI-MO/aimo-validation-aime`**
-
-```bash
-python3 benchmarks/benchmark_throughput.py \
-  --model Qwen/QwQ-32B \
-  --backend vllm \
-  --dataset-name hf \
-  --dataset-path AI-MO/aimo-validation-aime \
-  --hf-split train \
-  --num-prompts 10
-```
-
-### Benchmark with LoRA Adapters
-
-``` bash
-# download dataset
-# wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json
-python3 vllm/benchmarks/benchmark_throughput.py \
-  --model meta-llama/Llama-2-7b-hf \
-  --backend vllm \
-  --dataset_path <your data path>/ShareGPT_V3_unfiltered_cleaned_split.json \
-  --dataset_name sharegpt \
-  --num-prompts 10 \
-  --max-loras 2 \
-  --max-lora-rank 8 \
-  --enable-lora \
-  --lora-path yard1/llama-2-7b-sql-lora-test
-  ```
+3. Send requests
+    ```bash
+    python benchmarks/benchmark_sqzb.py \
+        --tokenizer /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --dataset /scratch-1/datasets/dynamic_sonnet_llama3/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet \
+        --max-input-len 1024 \
+        --max-output-len 1024 \
+        --lora-pattern ,lora-1,lora-2 \
+        --json-template benchmarks/guided_json_template.json
+    ```
