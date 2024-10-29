@@ -9,27 +9,31 @@ We've been conducting benchmarks via `vllm/entrypoints/openai/api_server.py` and
 ## Benchmarking process
 
 ### Benchmarking with dataset
-Benchmarking is done in the following 3 steps. Command line examples are for benchmarking a llama3 8B model with a dynamic dataset with 1k input and 1k output.
+Benchmarking is done in the following 3 steps. Command line examples are for benchmarking a llama3.1 8B model with a dynamic dataset with 1k input and 1k output.
 
 1. Run end-to-end benchmark
 
     - Run api server
         ```bash
         python -m vllm.entrypoints.openai.api_server \
-            --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
+            --model /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
             --block-size 128 \
             --max-model-len 2048 \
-            --enforce-eager \
-            --disable-log-requests
+            --max-num-seqs 128 \
+            --disable-log-requests \
+            --port 8000
         ```
 
     - Send requests
         ```bash
         python benchmarks/benchmark_sqzb.py \
-            --tokenizer /scratch-1/models/Meta-Llama-3-8B-Instruct \
+            --tokenizer /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
             --dataset /scratch-1/datasets/dynamic_sonnet_llama3/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet \
+            --num-requests 512 \
             --max-input-len 1024 \
-            --max-output-len 1024
+            --max-output-len 1024 \
+            --concurrency 128 \
+            --port 8000
         ```
 
 2. Run prefill benchmark
@@ -37,20 +41,24 @@ Benchmarking is done in the following 3 steps. Command line examples are for ben
     - Run api server again with the same configuration as step 1
         ```bash
         python -m vllm.entrypoints.openai.api_server \
-            --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
+            --model /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
             --block-size 128 \
             --max-model-len 2048 \
-            --enforce-eager \
-            --disable-log-requests
+            --max-num-seqs 128 \
+            --disable-log-requests \
+            --port 8000
         ```
 
     - Send requests with max output len set to 1
         ```bash
         python benchmarks/benchmark_sqzb.py \
-            --tokenizer /scratch-1/models/Meta-Llama-3-8B-Instruct \
+            --tokenizer /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
             --dataset /scratch-1/datasets/dynamic_sonnet_llama3/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet \
+            --num-requests 512 \
             --max-input-len 1024 \
-            --max-output-len 1
+            --max-output-len 1 \
+            --concurrency 128 \
+            --port 8000
         ```
 
 3. Summarize results
@@ -66,7 +74,7 @@ Total input tokens, total generated tokens, end-to-end latency, TTFT, TPOT, mean
 Repeat the steps above from 1 to 3 but with `--dataset` argument omitted in request sending script call. For example:
     ```bash
     python benchmarks/benchmark_sqzb.py \
-        --tokenizer /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --tokenizer /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
         --max-input-len 1024 \
         --max-output-len 1024
     ```
@@ -81,7 +89,7 @@ Currently, Multi-LoRA can be tested under limited configuration(`max_num_seqs` <
     ```bash
     VLLM_PROMPT_BS_BUCKET_MAX=128 \
     python -m vllm.entrypoints.openai.api_server \
-        --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --model /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
         --block-size 128 \
         --max-model-len 2048 \
         --max-num-seqs 128 \
@@ -90,14 +98,13 @@ Currently, Multi-LoRA can be tested under limited configuration(`max_num_seqs` <
         --lora-modules lora-1=/scratch-1/models/Gaudi_LoRA_Llama-3-8B-Instruct lora-2=/scratch-1/models/Gaudi_LoRA_Llama-3-8B-Instruct \
         --max-loras 2 \
         --max-lora-rank 8 \
-        --enforce-eager \
         --disable-log-requests
     ```
 
 2. Send requests with LoRA support
     ```bash
     python benchmarks/benchmark_sqzb.py \
-        --tokenizer /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --tokenizer /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
         --dataset /scratch-1/datasets/dynamic_sonnet_llama3/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet \
         --max-input-len 1024 \
         --max-output-len 1024 \
@@ -108,17 +115,18 @@ Currently, Multi-LoRA can be tested under limited configuration(`max_num_seqs` <
 1. Run api server
     ```bash
     python -m vllm.entrypoints.openai.api_server \
-        --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --model /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
         --block-size 128 \
         --max-model-len 2048 \
-        --enforce-eager \
-        --disable-log-requests
+        --max-num-seqs 128 \
+        --disable-log-requests \
+        --port 8000
     ```
 
 2. Send requests with json template
     ```bash
     python benchmarks/benchmark_sqzb.py \
-        --tokenizer /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --tokenizer /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
         --dataset /scratch-1/datasets/dynamic_sonnet_llama3/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet \
         --max-input-len 1024 \
         --max-output-len 1024 \
@@ -129,18 +137,19 @@ Currently, Multi-LoRA can be tested under limited configuration(`max_num_seqs` <
 1. Run api server
     ```bash
     python -m vllm.entrypoints.openai.api_server \
-        --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --model /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
         --block-size 128 \
         --max-model-len 2048 \
-        --enforce-eager \
+        --max-num-seqs 128 \
+        --disable-log-requests \
         --enable-prefix-caching \
-        --disable-log-requests
+        --port 8000
     ```
 
 2. Send requests
     ```bash
     python benchmarks/benchmark_sqzb.py \
-        --tokenizer /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --tokenizer /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
         --dataset /scratch-1/datasets/dynamic_sonnet_llama3/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet \
         --max-input-len 1024 \
         --max-output-len 1024
@@ -159,7 +168,7 @@ Currently, Multi-LoRA can be tested under limited configuration(`max_num_seqs` <
 1. Perform INC measurement mode with benchmark_throughput script.
     ```bash
     QUANT_CONFIG=configs/measure.json QUANT_VERBOSE=1 VLLM_SKIP_WARMUP=True python benchmarks/benchmark_throughput.py \
-        --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --model /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
         --input-len 1024 \
         --output-len 1024 \
         --num-prompts 128 \
@@ -171,10 +180,9 @@ Currently, Multi-LoRA can be tested under limited configuration(`max_num_seqs` <
     1. Run api server
         ```bash
         QUANT_CONFIG=configs/quantize.json QUANT_VERBOSE=1 python -m vllm.entrypoints.openai.api_server \
-            --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
+            --model /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
             --block-size 128 \
             --max-model-len 2048 \
-            --enforce-eager \
             --quantization inc \
             --kv-cache-dtype fp8_inc \
             --disable-log-requests
@@ -183,7 +191,7 @@ Currently, Multi-LoRA can be tested under limited configuration(`max_num_seqs` <
     2. Send requests
         ```bash
         python benchmarks/benchmark_sqzb.py \
-            --tokenizer /scratch-1/models/Meta-Llama-3-8B-Instruct \
+            --tokenizer /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
             --dataset /scratch-1/datasets/dynamic_sonnet_llama3/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet \
             --max-input-len 1024 \
             --max-output-len 1024
@@ -202,7 +210,7 @@ Currently, Multi-LoRA can be tested under limited configuration(`max_num_seqs` <
 1. Perform INC measurement mode with benchmark_throughput script.
     ```bash
     QUANT_CONFIG=configs/measure.json QUANT_VERBOSE=1 VLLM_SKIP_WARMUP=True python benchmarks/benchmark_throughput.py \
-        --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --model /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
         --input-len 1024 \
         --output-len 1024 \
         --num-prompts 128 \
@@ -215,10 +223,9 @@ Currently, Multi-LoRA can be tested under limited configuration(`max_num_seqs` <
     QUANT_CONFIG=configs/quantize.json QUANT_VERBOSE=1 \
     VLLM_PROMPT_BS_BUCKET_MAX=128 \
     python -m vllm.entrypoints.openai.api_server \
-        --model /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --model /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
         --block-size 128 \
         --max-model-len 2048 \
-        --enforce-eager \
         --max-num-seqs 128 \
         --max-num-batched-tokens 262144 \
         --enable-lora \
@@ -234,7 +241,7 @@ Currently, Multi-LoRA can be tested under limited configuration(`max_num_seqs` <
 3. Send requests
     ```bash
     python benchmarks/benchmark_sqzb.py \
-        --tokenizer /scratch-1/models/Meta-Llama-3-8B-Instruct \
+        --tokenizer /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
         --dataset /scratch-1/datasets/dynamic_sonnet_llama3/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet \
         --max-input-len 1024 \
         --max-output-len 1024 \
