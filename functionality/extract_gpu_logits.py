@@ -12,7 +12,6 @@ import pandas as pd
 import torch
 
 from vllm import LLM, SamplingParams
-from vllm.inputs import PromptInputs
 from vllm.utils import FlexibleArgumentParser
 
 
@@ -89,18 +88,21 @@ def override_probs(in_files: List[TextIOWrapper], out_files: List[TextIOWrapper]
         logit = logits[i].flatten()
         
         seq_id = seq_groups.seq_ids[0]
-        file_id = seq_id - offset
+        if seq_id == 0:
+            max_indices.append(max_indices[0])
+            continue
 
+        file_id = seq_id - offset
         in_file = in_files[file_id]
         out_file = out_files[file_id]
-
+    
         ref = json.loads(in_file.readline())
         ref_idx = ref["indices"]
         ref_max = ref["max"]
 
 
         max_indices.append(ref_max)
-        val = logit[ref_idx]
+        val = logit[ref_idx].tolist()
 
         line = json.dumps({
             "logits": val,
@@ -136,7 +138,7 @@ def main(args: argparse.Namespace):
         args.max_input_len,
         args.num_requests,
     )
-    inputs: List[PromptInputs] = [{
+    inputs = [{
         "prompt_token_ids": prompt_token_id
     } for prompt_token_id in prompt_token_ids]
 
@@ -156,15 +158,15 @@ def main(args: argparse.Namespace):
     llm.generate(inputs[:min(10, len(inputs))], sampling_params=sampling_params, use_tqdm=False)
 
     # create files to store the logits
-    os.makedirs(args.out_path)
+    os.makedirs(args.out_path, exist_ok=True)
     logit_files = [open(f"{args.out_path}/{i}.logits", "wt") for i in range(len(inputs))]
 
     # run inference
     if args.in_path:
-        llm.llm_engine.model_executor.driver_worker.model_runner.model.sampler.record_logit = functools.partial(record_logit, logit_files, args.topk)
+        ref_files = [open(f"{args.in_path}/{i}.logits", "rt") for i in range(len(inputs))]
+        llm.llm_engine.model_executor.driver_worker.model_runner.model.model.sampler.override_probs = functools.partial(override_probs, ref_files, logit_files)
     else:
-        ref_files = [open(f"{args.in_path}/{i}.logits", "wt") for i in range(len(inputs))]
-        llm.llm_engine.model_executor.driver_worker.model_runner.model.sampler.override_probs = functools.partial(override_probs, ref_files, logit_files)
+        llm.llm_engine.model_executor.driver_worker.model_runner.model.sampler.record_logit = functools.partial(record_logit, logit_files, args.topk)
 
 
     outputs = llm.generate(inputs, sampling_params=sampling_params, use_tqdm=True)
@@ -180,10 +182,10 @@ def main(args: argparse.Namespace):
 
 if __name__ == '__main__':
     parser = FlexibleArgumentParser()
-    # parser.add_argument('--model', type=str, default="/home/huijongjeong/hdd/models/Meta-Llama-3-8B-Instruct")
-    # parser.add_argument("--dataset", type=str, default="/home/huijongjeong/hdd/datasets/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet")    
-    parser.add_argument('--model', type=str)
-    parser.add_argument("--dataset", type=str)
+    parser.add_argument('--model', type=str, default="/home/irteamsu/models/Meta-Llama-3-8B-Instruct")
+    parser.add_argument("--dataset", type=str, default="/home/irteamsu/datasets/dynamic_sonnet_llama3/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet")    
+    # parser.add_argument('--model', type=str)
+    # parser.add_argument("--dataset", type=str)
     parser.add_argument('--max-model-len', type=int, default=2048)
     parser.add_argument('--gpu-memory-utilization', type=float, default=0.9)
     parser.add_argument('--block-size', type=int, default=16)
