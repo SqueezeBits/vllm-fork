@@ -1,6 +1,7 @@
 """A layer that samples the next tokens from the model's outputs."""
 import itertools
 import warnings
+from collections import defaultdict
 from dataclasses import dataclass
 from importlib.util import find_spec
 from math import inf
@@ -174,6 +175,9 @@ class Sampler(nn.Module):
         self.include_gpu_probs_tensor = False
         self.should_modify_greedy_probs_inplace = False
 
+        self.record_logit = lambda foo, bar: None
+        self.override_probs = None
+
     def _init_sampling_tensors(
         self,
         logits: torch.Tensor,
@@ -226,6 +230,8 @@ class Sampler(nn.Module):
         assert logits is not None
         _, vocab_size = logits.shape
 
+        self.record_logit(logits.cpu(), sampling_metadata)
+
         # Prepare sampling tensors with pinned memory to avoid blocking.
         if not sampling_metadata.reuse_sampling_tensors:
             self._init_sampling_tensors(logits, sampling_metadata)
@@ -264,11 +270,14 @@ class Sampler(nn.Module):
         if do_min_p:
             logits = _apply_min_p(logits, sampling_tensors.min_ps)
 
-        # We use float32 for probabilities and log probabilities.
-        # Compute the probabilities.
-        probs = torch.softmax(logits, dim=-1, dtype=torch.float)
-        # Compute the log probabilities.
-        logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float)
+        if self.override_probs:
+            probs, logprobs = self.override_probs(logits, sampling_metadata)
+        else:
+            # We use float32 for probabilities and log probabilities.
+            # Compute the probabilities.
+            probs = torch.softmax(logits, dim=-1, dtype=torch.float)
+            # Compute the log probabilities.
+            logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float)
 
         # Sample the next tokens.
         maybe_deferred_sample_results, maybe_sampled_tokens_tensor = _sample(
