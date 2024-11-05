@@ -78,19 +78,21 @@ def record_logit(files: List[TextIOWrapper], k, logits: torch.Tensor, sampling_m
 def override_probs(in_files: List[TextIOWrapper], out_files: List[TextIOWrapper], logits: torch.Tensor, sampling_metadata) -> Tuple[torch.Tensor, torch.Tensor]:
     global offset
     if offset is None:
-        offset = min(seq_groups.seq_ids[0] for seq_groups in sampling_metadata.seq_groups)
+        offset = min(seq_groups.seq_ids[0] for seq_groups in sampling_metadata.seq_groups if seq_groups.sampling_params.max_tokens != 16)
     assert offset is not None
 
-    _, vocab_size = logits.shape
+    foo, vocab_size = logits.shape
 
     max_indices = []
     for i, seq_groups in enumerate(sampling_metadata.seq_groups):
         logit = logits[i].flatten()
+        if seq_groups.sampling_params.max_tokens == 16:
+            max_indices.append(torch.argmax(logit).item())
+            continue
+
+
         
         seq_id = seq_groups.seq_ids[0]
-        if seq_id == 0:
-            max_indices.append(max_indices[0])
-            continue
 
         file_id = seq_id - offset
         in_file = in_files[file_id]
@@ -99,7 +101,6 @@ def override_probs(in_files: List[TextIOWrapper], out_files: List[TextIOWrapper]
         ref = json.loads(in_file.readline())
         ref_idx = ref["indices"]
         ref_max = ref["max"]
-
 
         max_indices.append(ref_max)
         val = logit[ref_idx].tolist()
@@ -111,7 +112,7 @@ def override_probs(in_files: List[TextIOWrapper], out_files: List[TextIOWrapper]
         })
         out_file.write(f"{line}\n")
 
-    probs = torch.nn.functional.one_hot(torch.tensor(max_indices), vocab_size).to(dtype=torch.float)
+    probs = torch.nn.functional.one_hot(torch.tensor(max_indices), vocab_size).to(device=logits.device,  dtype=torch.float)
     log_probs = probs - 1
 
     return probs, log_probs
@@ -182,7 +183,7 @@ def main(args: argparse.Namespace):
 
 if __name__ == '__main__':
     parser = FlexibleArgumentParser()
-    parser.add_argument('--model', type=str, default="/home/irteamsu/models/Meta-Llama-3-8B-Instruct")
+    parser.add_argument('--model', type=str, default="/home/irteamsu/models/Meta-Llama-3.1-8B-Instruct")
     parser.add_argument("--dataset", type=str, default="/home/irteamsu/datasets/dynamic_sonnet_llama3/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet")    
     # parser.add_argument('--model', type=str)
     # parser.add_argument("--dataset", type=str)
