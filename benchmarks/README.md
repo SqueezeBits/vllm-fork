@@ -88,16 +88,13 @@ Repeat the steps above from 1 to 3 but with `--dataset` argument omitted in requ
 Benchmark script now supports additional features including batched multi-LoRA, guided json, automatic prefix caching and FP8 KV cache. Command line examples are as follows:
 
 ### A. Batched Multi-LoRA
-Currently, Multi-LoRA can be tested under limited configuration(`max_num_seqs` <= 128, `max_num_batched_tokens` == `max_num_seqs` * `max_model_len`) due to [vllm-fork internal bug](https://github.com/HabanaAI/vllm-fork/issues/237).
 1. Run api server with LoRA support
     ```bash
-    VLLM_PROMPT_BS_BUCKET_MAX=128 \
     python -m vllm.entrypoints.openai.api_server \
         --model /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
         --block-size 128 \
         --max-model-len 2048 \
         --max-num-seqs 128 \
-        --max-num-batched-tokens 262144 \
         --enable-lora \
         --lora-modules lora-1=/scratch-1/models/Gaudi_LoRA_Llama-3-8B-Instruct lora-2=/scratch-1/models/Gaudi_LoRA_Llama-3-8B-Instruct \
         --max-loras 2 \
