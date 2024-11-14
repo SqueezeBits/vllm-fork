@@ -1,10 +1,18 @@
-# SQZB VLLM benchmarking script
+# SQZB VLLM benchmarking scripts
 
-We've been conducting benchmarks via `vllm/entrypoints/openai/api_server.py` and `benchmarks/benchmark_sqzb.py`.
+We've been conducting performance benchmarks via `vllm/entrypoints/openai/api_server.py` and `benchmarks/benchmark_sqzb.py`.
+
+Functionality benchmarks are conducted via `benchmarks/check_functionality.py`.
 
 ## Disclaimer
 * Time spent on request queueing is not included in reported TTFT by the benchmarking script.
 * We assume prompts in the datasets are already tokenized to exclude input tokenization from the measurement. 
+
+# Table of Contents
+- [Performance Benchmark](#performance-benchmark)
+- [Functionality Benchmark](#functionality-benchmark)
+
+# Performance Benchmark
 
 ## Benchmarking process
 
@@ -20,8 +28,7 @@ Benchmarking is done in the following 3 steps. Command line examples are for ben
             --block-size 128 \
             --max-model-len 2048 \
             --max-num-seqs 128 \
-            --disable-log-requests \
-            --port 8000
+            --disable-log-requests
         ```
 
     - Send requests
@@ -32,8 +39,7 @@ Benchmarking is done in the following 3 steps. Command line examples are for ben
             --num-requests 512 \
             --max-input-len 1024 \
             --max-output-len 1024 \
-            --concurrency 128 \
-            --port 8000
+            --concurrency 128
         ```
 
 2. Run prefill benchmark
@@ -45,8 +51,7 @@ Benchmarking is done in the following 3 steps. Command line examples are for ben
             --block-size 128 \
             --max-model-len 2048 \
             --max-num-seqs 128 \
-            --disable-log-requests \
-            --port 8000
+            --disable-log-requests 
         ```
 
     - Send requests with max output len set to 1
@@ -57,8 +62,7 @@ Benchmarking is done in the following 3 steps. Command line examples are for ben
             --num-requests 512 \
             --max-input-len 1024 \
             --max-output-len 1 \
-            --concurrency 128 \
-            --port 8000
+            --concurrency 128 
         ```
 
 3. Summarize results
@@ -119,8 +123,7 @@ Currently, Multi-LoRA can be tested under limited configuration(`max_num_seqs` <
         --block-size 128 \
         --max-model-len 2048 \
         --max-num-seqs 128 \
-        --disable-log-requests \
-        --port 8000
+        --disable-log-requests
     ```
 
 2. Send requests with json template
@@ -142,8 +145,7 @@ Currently, Multi-LoRA can be tested under limited configuration(`max_num_seqs` <
         --max-model-len 2048 \
         --max-num-seqs 128 \
         --disable-log-requests \
-        --enable-prefix-caching \
-        --port 8000
+        --enable-prefix-caching 
     ```
 
 2. Send requests
@@ -248,3 +250,53 @@ Currently, Multi-LoRA can be tested under limited configuration(`max_num_seqs` <
         --lora-pattern ,lora-1,lora-2 \
         --json-template benchmarks/guided_json_template.json
     ```
+
+# Functionality Benchmark
+
+We compare the MSE of logits and MAE of probabilities of topK results in each step.
+
+## Benchmarking process
+
+1. Extract the reference for evaluation (probably in GPU)
+```bash
+python benchmarks/check_functionality.py \
+    --model /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
+    --dataset /scratch-1/datasets/dynamic_sonnet_llama3/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet \
+    ref
+```
+
+2. Move the extracted results to the evaluation environment
+
+    Results are saved to `./ref` in step 1 by default. Compress the whole directory and unzip it in the evaluation environment.
+
+3. Evaluate the output (probably in HPU)
+```bash
+python benchmarks/check_functionality.py \
+    --model /scratch-1/models/Meta-Llama-3.1-8B-Instruct \
+    --dataset /scratch-1/datasets/dynamic_sonnet_llama3/dynamic_sonnet_llama_3_prefix_256_max_1024_1024_sampled.parquet \
+    --block-size 128
+    eval \
+    --ref /path/to/unzipped/directory/in/step/2
+```
+
+## Full usage
+
+```
+extracting reference values to ref dir:
+    python check_functionality.py --model <path to model> --dataset <path to dataset> ref
+
+extracting reference values with block size set to 128 and output dir specified:
+    python check_functionality.py --model <path to model> --dataset <path to dataset> --block-size 128 ref --out <output dir>
+
+evaluating with reference values in ref dir:
+    python check_functionality.py --model <path to model> --dataset <path to dataset> eval
+
+evaluating with reference values in specified dir:
+    python check_functionality.py --model <path to model> --dataset <path to dataset> eval --ref <ref dir>
+
+evaluating with reference values in specified dir with output dir specified:
+    python check_functionality.py --model <path to model> --dataset <path to dataset> eval --ref <ref dir> --out <output dir>
+
+evaluating with previous results (comparing ./ref and ./val):
+    python check_functionality.py --model <path to model> --dataset <path to dataset> eval --skip-inference
+```
