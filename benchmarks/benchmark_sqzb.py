@@ -310,7 +310,9 @@ def main(args: argparse.Namespace):
     print(f"\tmax: {tpot.max()} msec")  
 
     if args.save_result:
-        base_dir = Path(args.result_dir).mkdir(exist_ok=True)
+        base_dir = Path(args.result_dir)
+        base_dir.mkdir(exist_ok=True)
+
         file_name = model_id.strip("/").split("/")[-1]
         file_name += f"_qps_{args.request_rate}"
         file_name += f"_concurrency_{args.concurrency}" if args.concurrency else ""
