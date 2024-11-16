@@ -317,6 +317,8 @@ def main(args: argparse.Namespace):
         file_name += f"_qps_{args.request_rate}"
         file_name += f"_concurrency_{args.concurrency}" if args.concurrency else ""
         file_name += f"_total_{benchmark_duration}"
+        file_name += f"_iter_{total_iteration}"
+        file_name += f"_batch_{mean_bs}"
         file_name += f"_in_{total_input_tokens}"
         file_name += f"_out_{total_generated_tokens}"
         file_name += "_LoRA" if args.lora_pattern else ""
