@@ -279,6 +279,7 @@ def main(args: argparse.Namespace):
     
     total_iteration = iteration_data["num_iteration"]
     mean_bs = sum(bs[1] for bs in iteration_data["batch_sizes"]) / total_iteration
+    num_cumulative_preemption = iteration_data["cumulative_preemption"]
 
     results = [parse_raw_data(raw) for raw in raw_results]
     df = pd.DataFrame(data=results)
@@ -292,6 +293,7 @@ def main(args: argparse.Namespace):
     print(f"\tTotal latency: {benchmark_duration} sec")
     print(f"\tTotal iteration: {total_iteration}")
     print(f"\tMean running batchsize: {mean_bs}")
+    print(f"\tCumulative preemptions: {num_cumulative_preemption}")
     
     # team NAVER requested to report TTFT data excluding the queueing time
     # so we use first_scheduled_time instead of arrival_time
@@ -321,6 +323,7 @@ def main(args: argparse.Namespace):
         file_name += f"_batch_{mean_bs}"
         file_name += f"_in_{total_input_tokens}"
         file_name += f"_out_{total_generated_tokens}"
+        file_name += f"_preempt_{num_cumulative_preemption}"
         file_name += "_LoRA" if args.lora_pattern else ""
         file_name += "_guided" if args.json_template else ""
         file_name += f"_{args.dataset.split('/')[-1]}" if args.dataset else "_random"
@@ -337,6 +340,7 @@ def parse_entrypoint(value: str) -> Entrypoint:
 def parse_lora_pattern(value: str) -> List[Union[str, None]]:
     parts = value.split(',')
     return [part if part != '' else None for part in parts]
+
 
 def parse_qps(value: str) -> float:
     if value == "inf" or float(value) == -1.0:

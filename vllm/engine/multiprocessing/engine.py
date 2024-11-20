@@ -318,12 +318,14 @@ class MQLLMEngine:
         if self.log_requests:
             logger.info("Aborted request %s.", request.request_id)
     
-    def _handle_iteration_data_request(self, request: RPCIterDataRequest.GET):
+    def _handle_iteration_data_request(self, request: RPCIterDataRequest):
         num_iteration, batch_sizes = self.engine.get_iteration_data()
+        cumulative_preemption = self.engine.scheduler[0].num_cumulative_preemption
 
         outputs = IterDataResponse(
             num_iteration,
-            batch_sizes
+            batch_sizes,
+            cumulative_preemption
         )
         output_bytes = pickle.dumps(outputs)
         self.iter_output_socket.send_multipart((output_bytes, ), copy=False)

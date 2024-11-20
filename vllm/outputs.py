@@ -321,3 +321,4 @@ class RequestOutputFactory:
 class IterDataResponse:
     num_iteration: int
     batch_sizes: list[tuple[str, int]]
+    cumulative_preemption: int

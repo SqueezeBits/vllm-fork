@@ -964,6 +964,7 @@ class LLMEngine:
 
     def clear_iteration_data(self) -> None:
         self.num_iteration = 0
+        self.scheduler[0].num_cumulative_preemption = 0
         self.batch_sizes.clear()
 
     def has_unfinished_requests(self) -> bool:

@@ -357,6 +357,7 @@ async def get_iteration_data(raw_request: Request) -> Response:
     ret = {
         "num_iteration": iteration_data.num_iteration,
         "batch_sizes": iteration_data.batch_sizes,
+        "cumulative_preemption": iteration_data.cumulative_preemption
     }
     return JSONResponse(content=ret)
 
