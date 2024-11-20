@@ -9,14 +9,14 @@ import functools
 import requests
 import functools
 from dataclasses import dataclass
-from typing import AsyncGenerator, Optional, List, Union, Dict, Tuple, Callable, Awaitable
 from enum import Enum
+from pathlib import Path
+from typing import AsyncGenerator, Optional, List, Union, Dict, Tuple, Callable, Awaitable
 
 import numpy as np
 import pandas as pd
 import torch
 import tqdm
-import os
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 
@@ -198,7 +198,6 @@ def parse_raw_data(raw_data: RAW_RESULT) -> RequestResult:
         finished_time=response["metrics"][0]["finished_time"],
         waiting_time=response["metrics"][0]["time_in_queue"],
         client_side_total_latency=request_latency,
-        # mean_running_bs=response["mean_running_bs"][0]
     )
 
     return parsed
@@ -224,6 +223,7 @@ async def benchmark(request_rate: float, concurrency: Union[int, None]) -> List[
         outputs = await asyncio.gather(*tasks)
     return outputs
 
+
 def get_unique_filepath(filepath: str) -> str:
     base, ext = os.path.splitext(filepath)
     counter = 1
@@ -233,6 +233,7 @@ def get_unique_filepath(filepath: str) -> str:
         new_filepath = f"{base}_{counter}{ext}"
         counter += 1
     return new_filepath
+
 
 def main(args: argparse.Namespace):
     global REQUESTS
@@ -308,45 +309,26 @@ def main(args: argparse.Namespace):
     print(f"\tmean: {tpot.mean()} msec")
     print(f"\tmax: {tpot.max()} msec")  
 
-    if args.save_pkl:
-        out_path = model_id.strip("/").split("/")[-1]
-        out_path += f"_qps_{args.request_rate}"
-        out_path += f"_concurrency_{args.concurrency}" if args.concurrency else ""
-        out_path += f"_total_{benchmark_duration}"
-        out_path += f"_in_{total_input_tokens}"
-        out_path += f"_out_{total_generated_tokens}"
-        out_path += "_LoRA" if args.lora_pattern else ""
-        out_path += "_guided" if args.json_template else ""
-        out_path += f"_{args.dataset.split('/')[-1]}" if args.dataset else "_random"
-        out_path += f"_{args.num_requests}"
-        out_path += ".pkl"
-    
-        df.to_pickle(out_path)
-        
-    if args.csv_path:
-        # Save summary statistics to CSV
-        csv_path = args.csv_path
-        csv_path += f"/WARMUP/" if args.warmup else ""
-        csv_path += model_id.split("/")[-1]
-        csv_path += "" if args.dataset else "_FIXED"
-        csv_path += f"_max_in{args.max_input_len}"
-        csv_path += f"_out{args.max_output_len}"
-        csv_path += f"_max_seqs{args.max_num_seqs}"
-        csv_path += "_Pr" if args.max_output_len == 1 else "_De"
-        csv_path += f"_conc{args.concurrency}" if args.concurrency else ""
-        csv_path += ".csv"
-        csv_path = get_unique_filepath(csv_path)
-        summary_data = {
-            "Metric": ["# requests", "Total input tokens", "Total generated tokens", "Total latency (msec)", "Mean batch size",
-                    "TTFT median (msec)", "TTFT mean (msec)", "TTFT max (msec)", 
-                    "TPOT median (msec)", "TPOT mean (msec)", "TPOT max (msec)",],
-            "Value": [args.num_requests, total_input_tokens, total_generated_tokens, f"{benchmark_duration*1000}", mean_bs,
-                    f"{ttft.median():3f}", f"{ttft.mean():3f}", f"{ttft.max():3f}",
-                    f"{tpot.median():3f}", f"{tpot.mean():3f}", f"{tpot.max():3f}",]
-        }
-        
-        summary_df = pd.DataFrame(summary_data)
-        summary_df.to_csv(csv_path, index=False)
+    if args.save_result:
+        base_dir = Path(args.result_dir)
+        base_dir.mkdir(exist_ok=True)
+
+        file_name = model_id.strip("/").split("/")[-1]
+        file_name += f"_qps_{args.request_rate}"
+        file_name += f"_concurrency_{args.concurrency}" if args.concurrency else ""
+        file_name += f"_total_{benchmark_duration}"
+        file_name += f"_iter_{total_iteration}"
+        file_name += f"_batch_{mean_bs}"
+        file_name += f"_in_{total_input_tokens}"
+        file_name += f"_out_{total_generated_tokens}"
+        file_name += "_LoRA" if args.lora_pattern else ""
+        file_name += "_guided" if args.json_template else ""
+        file_name += f"_{args.dataset.split('/')[-1]}" if args.dataset else "_random"
+        file_name += f"_{args.num_requests}"
+        file_name += ".pkl"
+
+        df.to_pickle(base_dir / file_name)
+
 
 def parse_entrypoint(value: str) -> Entrypoint: 
     return Entrypoint[value.upper()]
@@ -363,20 +345,21 @@ def parse_qps(value: str) -> float:
     return float(value)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Benchmark the online serving throughput.")
-    
+    parser = argparse.ArgumentParser(description="Benchmark the online serving scenario.")
+
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--host", type=str, default="localhost")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--entrypoint", type=Entrypoint, default=Entrypoint.OPENAI)
 
+    parser.add_argument("--max-input-len", type=int, required=True)
+    parser.add_argument("--max-output-len", type=int, default=1024)
     parser.add_argument("--tokenizer", type=str, required=True)
     parser.add_argument("--dataset", type=str, default="")
     parser.add_argument("-n", "--num-requests", type=int, default=1024)
-
-    parser.add_argument(
-        "--max-input-len", type=int, required=True)
-    parser.add_argument("--max-output-len", type=int, default=1024)
+    parser.add_argument("--mimic-throughput-sample", action='store_true',
+                        help="Mimic request sampling process of "
+                             "benchmark_throughput.py script.")
 
     parser.add_argument("--request-rate", type=parse_qps, default=float("inf"),
                         help="Number of requests per second. If this is inf, "
@@ -384,9 +367,15 @@ if __name__ == "__main__":
                              "Otherwise, we use Poisson process to synthesize "
                              "the request arrival times.")
     parser.add_argument("--concurrency", type=int, default=None)
-    parser.add_argument("--seed", type=int, default=0)
+
+    parser.add_argument("--save-result", action='store_true', help="Save results to pkl file.")
+    parser.add_argument("--result-dir", type=str, default=".")
+
+    # guided json
     parser.add_argument("--json-template", type=str, default=None,
                         help="Path to guided json template.")
+    
+    # lora
     parser.add_argument("--lora-pattern", type=parse_lora_pattern, default=[],
                         help="Multi-batch LoRA ids. Skip LoRA for empty IDs. "
                              "e.g.: ,,sql-lora,sql-lora-2"
@@ -394,16 +383,6 @@ if __name__ == "__main__":
                              "unless random-lora flag is set.")
     parser.add_argument("--random-lora", action='store_true',
                         help="Shuffle lora-pattern randomly.")
-    parser.add_argument("--mimic-throughput-sample", action='store_true',
-                        help="Mimic request sampling process of "
-                             "benchmark_throughput.py script.")
-    parser.add_argument("--csv-path", type=str, default=None,
-                        help="Path to save results.")
-    parser.add_argument("--save-pkl", action='store_true',
-                        help="Save pkl files")
-    parser.add_argument("--warmup", action='store_true',
-                        help="Just for saving csv file name.")
-    parser.add_argument("--max-num-seqs", type=int, default=128)
 
     args = parser.parse_args()
 
