@@ -1,0 +1,13 @@
+{
+    "mode": "MEASURE",
+    "observer": "maxabs",
+    "whitelist": {
+        "types": [],
+        "names": []
+    },
+    "blacklist": {
+        "types": [],
+        "names": []
+    },
+    "dump_stats_path": "./artifacts/artifact"
+}

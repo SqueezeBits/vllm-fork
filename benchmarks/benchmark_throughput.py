@@ -168,6 +168,8 @@ def run_vllm(
                 ignore_eos=True,
             ))
         end = time.perf_counter()
+    if quantization == "inc" and kv_cache_dtype != "fp8_inc":
+        llm.finish_measurements()
     return end - start
 
 
