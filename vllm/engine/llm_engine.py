@@ -94,7 +94,7 @@ class OutputData(NamedTuple):
     # outputs from multiple steps.
     is_first_step_output: Optional[bool]
     skip: List[int]
-    remote_prefill_request: Optional[RemotePrefillRequest]
+    remote_prefill_requests: Optional[List[RemotePrefillRequest]]
 
 
 class SchedulerContext:
@@ -108,7 +108,7 @@ class SchedulerContext:
         self.scheduler_outputs: Optional[SchedulerOutputs] = None
 
         self.multi_step_stream_outputs: bool = multi_step_stream_outputs
-        self.remote_prefill_request: List[RemotePrefillRequest] = []
+        self.remote_prefill_requests: List[RemotePrefillRequest] = []
 
     def append_output(self, outputs: List[SamplerOutput],
                       seq_group_metadata_list: List[SequenceGroupMetadata],
@@ -124,7 +124,7 @@ class SchedulerContext:
                        is_last_step=is_last_step,
                        is_first_step_output=is_first_step_output,
                        skip=[],
-                       remote_prefill_request=remote_prefill_requests))
+                       remote_prefill_requests=remote_prefill_requests))
 
 
 class LLMEngine:
