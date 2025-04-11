@@ -72,6 +72,10 @@ if TYPE_CHECKING:
     VLLM_ENABLE_V1_MULTIPROCESSING: bool = True
     VLLM_LOG_BATCHSIZE_INTERVAL: float = -1
     VLLM_DISABLE_COMPILE_CACHE: bool = False
+    VLLM_KV_CAPI_PATH: Optional[str] = None
+    VLLM_KV_NAMESPACE: Optional[str] = None
+    VLLM_KV_COMPONENT: Optional[str] = None
+    VLLM_WORKER_ID: Optional[int] = None
 
 
 def get_default_cache_root():
@@ -467,6 +471,21 @@ environment_variables: Dict[str, Callable[[], Any]] = {
     lambda: float(os.getenv("VLLM_LOG_BATCHSIZE_INTERVAL", "-1")),
     "VLLM_DISABLE_COMPILE_CACHE":
     lambda: bool(int(os.getenv("VLLM_DISABLE_COMPILE_CACHE", "0"))),
+
+    # Path to the C API Library
+    "VLLM_KV_CAPI_PATH":
+    lambda: os.environ.get("VLLM_KV_CAPI_PATH", None),
+
+    # Identifiers to publish KV related information
+    "VLLM_KV_NAMESPACE":
+    lambda: os.environ.get("VLLM_KV_NAMESPACE", None),
+    "VLLM_KV_COMPONENT":
+    lambda: os.environ.get("VLLM_KV_COMPONENT", None),
+
+    # Worker ID used for identifying workers in distributed settings
+    "VLLM_WORKER_ID":
+    lambda: int(os.getenv("VLLM_WORKER_ID", "0"))
+    if "VLLM_WORKER_ID" in os.environ else None,
 }
 
 # end-env-vars-definition

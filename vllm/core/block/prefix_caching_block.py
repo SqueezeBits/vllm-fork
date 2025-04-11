@@ -3,7 +3,7 @@ import sys
 from bisect import bisect_left
 from os.path import commonprefix
 from typing import (Callable, Dict, FrozenSet, Iterable, List, Optional, Set,
-                    Tuple)
+                    Tuple, TYPE_CHECKING)
 
 from vllm.core.block.common import (CacheMetricData, CopyOnWriteTracker,
                                     get_all_blocks_recursively)
@@ -21,6 +21,8 @@ PrefixHash = int
 # then we know this block hasn't been accessed yet.
 _DEFAULT_LAST_ACCESSED_TIME = -1
 
+if TYPE_CHECKING:
+    from vllm.core.event_manager import KVCacheEventManager
 
 class BlockTracker:
     """Used to track the status of a block inside the prefix caching allocator
@@ -67,6 +69,7 @@ class PrefixCachingBlockAllocator(BlockAllocator):
         block_size: int,
         block_ids: Optional[Iterable[int]] = None,
         eviction_policy: EvictionPolicy = EvictionPolicy.LRU,
+        event_manager: Optional["KVCacheEventManager"] = None,
     ):
         if block_ids is None:
             block_ids = range(num_blocks)
@@ -116,6 +119,8 @@ class PrefixCachingBlockAllocator(BlockAllocator):
             refcounter=self._refcounter.as_readonly())
 
         self.metric_data = CacheMetricData()
+
+        self.event_manager = event_manager
 
     # Implements Block.Factory.
     def _create_block(
@@ -324,6 +329,9 @@ class PrefixCachingBlockAllocator(BlockAllocator):
         assert self._refcounter.get(_block_id) == 0
         assert _block_id == block_id
 
+        if self.event_manager:
+            self.event_manager.enqueue_removed_event(content_hash_to_evict)
+
         self._cached_blocks.pop(content_hash_to_evict)
 
         self._refcounter.incr(block_id)
@@ -462,6 +470,10 @@ class PrefixCachingBlockAllocator(BlockAllocator):
             # Mark this block as touched so that it can be marked as
             # computed after the entire batch of sequences are scheduled.
             self._touched_blocks.add(block.block_id)
+
+            if self.event_manager:
+                self.event_manager.enqueue_stored_event(block.prev_block, block)
+
             return block.block_id
 
         # Reuse the cached content hash
@@ -531,6 +543,10 @@ class PrefixCachingBlockAllocator(BlockAllocator):
         for block_id in self._touched_blocks:
             self._block_tracker[block_id].computed = True
         self._touched_blocks.clear()
+        for block_id in block_ids:
+            if block_id in self._touched_blocks:
+                self._block_tracker[block_id].computed = True
+                self._touched_blocks.remove(block_id)
 
     def _track_block_id(self, block_id: Optional[BlockId],
                         computed: bool) -> None:
