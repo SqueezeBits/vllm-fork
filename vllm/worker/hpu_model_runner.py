@@ -2424,6 +2424,18 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
 
         return output if type(output) is list else [output]
 
+    def need_recv_kv(self, model_input, kv_caches) -> bool:
+        if self.vllm_config.kv_transfer_config is not None and \
+            self.vllm_config.kv_transfer_config.kv_connector == "DynamoNixlConnector":
+            return False
+        raise NotImplementedError
+
+    def need_send_kv(self, model_input, kv_caches) -> bool:
+        if self.vllm_config.kv_transfer_config is not None and \
+            self.vllm_config.kv_transfer_config.kv_connector == "DynamoNixlConnector":
+            return False
+        raise NotImplementedError
+
     def _decode_sampler_outputs(self, model_input):
         use_async_out_proc = model_input.async_callback is not None
         sampler_outputs = []
