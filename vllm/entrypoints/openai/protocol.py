@@ -5,7 +5,7 @@
 import json
 import re
 import time
-from typing import Annotated, Any, ClassVar, Literal, Optional, Union
+from typing import Annotated, Any, ClassVar, Literal, Optional, Union, List
 
 import torch
 from fastapi import UploadFile
